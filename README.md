@@ -4,8 +4,6 @@
 
 <h1 align="center">GlassMacro</h1>
 
-<p align="center">An AFK helper for <b>Roblox Rivals</b> that plays Free For All for you, so the playtime keeps going up while you're away.</p>
-
 <p align="center">
   <img src="docs/screenshot.png" width="420" alt="GlassMacro window">
 </p>
