@@ -1,0 +1,16 @@
+# build output
+build/
+build_folder/
+dist/
+dist_folder/
+__pycache__/
+*.spec
+
+# local-only working files
+*.bak*
+patch_glass.py
+icon_preview.png
+ANTIVIRUS_PLAN.md
+
+# real screenshots used by test_detectors.py - they show other players' names
+test_screens/

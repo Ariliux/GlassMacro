@@ -1,0 +1,7 @@
+customtkinter==5.2.2
+keyboard==0.13.5
+numpy==2.4.3
+opencv-python==4.13.0.92
+pillow==12.1.1
+# only needed to build the exe
+pyinstaller==6.19.0

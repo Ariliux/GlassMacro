@@ -1,0 +1,31 @@
+# PyInstaller --version-file for GlassMacro. Gives the exe a real name,
+# description and version in Properties > Details. An exe with none of this
+# looks more like a throwaway dropper to antivirus heuristics.
+# Keep filevers/prodvers and the strings in step with APP_VER in glassmacro.py.
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 2, 0, 0),
+    prodvers=(1, 2, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable('040904B0', [
+        StringStruct('CompanyName', 'GlassMacro'),
+        StringStruct('FileDescription', 'GlassMacro - AFK helper for Roblox Rivals'),
+        StringStruct('FileVersion', '1.2.0'),
+        StringStruct('InternalName', 'GlassMacro'),
+        StringStruct('LegalCopyright', 'Copyright (c) 2026 GlassMacro'),
+        StringStruct('OriginalFilename', 'GlassMacro.exe'),
+        StringStruct('ProductName', 'GlassMacro'),
+        StringStruct('ProductVersion', '1.2.0'),
+      ])
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
