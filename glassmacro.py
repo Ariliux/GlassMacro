@@ -29,9 +29,11 @@ import numpy as np
 from PIL import ImageGrab
 
 import customtkinter as ctk
+import tkinter as tk
+import tkinter.font as tkfont
 import keyboard
 
-APP_NAME, APP_VER = "GlassMacro", "1.2"
+APP_NAME, APP_VER = "GlassMacro", "1.0.3"
 
 # Calibration lives in AppData, never beside the exe: a PyInstaller onefile
 # build unpacks to a temp folder that is deleted on exit, so anything saved
@@ -758,13 +760,157 @@ def find_random(cal, tile, threshold, shot=None):
 
 
 # ------------------------------------------------------------------ app ---
+# ------------------------------------------------------------ 1.0.3 look ---
+# Quiet Premium: one type family, a strict size scale, and depth from layered
+# panels plus 1px hairlines - Tk has no blur or shadow, so that is all there is.
+INSET, HAIRLINE, SHEEN = "#0a1019", "#172538", "#28405c"
+ACCENT_DIM, GREEN_DIM = "#0f2a3d", "#0f2a1d"
+AMBER_DIM, RED_DIM = "#2b230f", "#2a1418"
+KEYCAP_LINE = "#2c4058"
+
+
+def blend(c1, c2, t):
+    """Mix two #rrggbb colours: t=0 is c1, t=1 is c2. Tk has no alpha."""
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(round(x + (y - x) * t) for x, y in zip(a, b))
+
+
+def span(secs):
+    """'2h 14m' for a duration, '14m' under an hour, '40s' under a minute."""
+    s = int(max(0, secs))
+    if s >= 3600:
+        return f"{s // 3600}h {s % 3600 // 60:02d}m"
+    if s >= 60:
+        return f"{s // 60}m"
+    return f"{s}s"
+
+
+def draw_gem(canvas, x, y, size, dim=False):
+    """The faceted gem from the icon, in four polygons (a 20x20 design)."""
+    k = size / 20.0
+    faces = (((4, 3, 16, 3, 20, 8, 10, 19, 0, 8), "#1f7fbf"),
+             ((4, 3, 16, 3, 13, 8, 7, 8), "#a5e4ff"),
+             ((0, 8, 7, 8, 10, 19), "#5ecbff"),
+             ((13, 8, 20, 8, 10, 19), "#2b93d1"))
+    for pts, colour in faces:
+        if dim:
+            colour = blend(colour, PANEL, 0.55)
+        canvas.create_polygon([x + p * k if i % 2 == 0 else y + p * k
+                               for i, p in enumerate(pts)],
+                              fill=colour, outline="")
+
+
+class GlassButton(ctk.CTkFrame):
+    """The big Start / Stop button: a glyph, a word and an F8 keycap.
+
+    A CTkButton holds one string, and 'Start    F8' spaced out by hand read
+    like a placeholder. This is a frame that behaves like a button. Its
+    configure() takes the options the app sets and passes anything else (the
+    bg_color a parent frame pushes down) straight through.
+    """
+
+    def __init__(self, master, command, font, glyph_font, key_font):
+        super().__init__(master, height=46, corner_radius=12, border_width=1,
+                         fg_color=ACCENT, border_color=ACCENT)
+        self._command = command
+        self._fill, self._hover = ACCENT, ACCENT_SOFT
+        self._hovering = False
+        self._row = ctk.CTkFrame(self, fg_color="transparent")
+        self._row.place(relx=0.5, rely=0.5, anchor="center")
+        self._glyph = ctk.CTkLabel(self._row, text="▶", font=glyph_font,
+                                   text_color=INK, height=20)
+        self._glyph.pack(side="left", padx=(0, 8))
+        self._text = ctk.CTkLabel(self._row, text="Start", font=font,
+                                  text_color=INK, height=20)
+        self._text.pack(side="left")
+        self._key = ctk.CTkFrame(self._row, corner_radius=6, border_width=1,
+                                 fg_color=PANEL, border_color=KEYCAP_LINE)
+        self._key.pack(side="left", padx=(12, 0))
+        self._keytext = ctk.CTkLabel(self._key, text="F8", font=key_font,
+                                     text_color=SUBTLE, height=16)
+        self._keytext.pack(padx=7, pady=2)
+        for w in (self, self._row, self._glyph, self._text, self._key,
+                  self._keytext):
+            w.bind("<Enter>", self._enter, add="+")
+            w.bind("<Leave>", self._leave, add="+")
+            w.bind("<ButtonRelease-1>", self._click, add="+")
+            try:
+                w.configure(cursor="hand2")
+            except Exception:
+                pass
+
+    def _paint_fill(self, colour):
+        super().configure(fg_color=colour)
+        for w in (self._row, self._glyph, self._text, self._key):
+            try:
+                w.configure(bg_color=colour)
+            except Exception:
+                pass
+
+    def _inside(self):
+        x, y = self.winfo_pointerxy()
+        return (self.winfo_rootx() <= x < self.winfo_rootx() + self.winfo_width()
+                and self.winfo_rooty() <= y < self.winfo_rooty()
+                + self.winfo_height())
+
+    def _enter(self, _e=None):
+        if not self._hovering:
+            self._hovering = True
+            self._paint_fill(self._hover)
+
+    def _leave(self, _e=None):
+        # moving from the frame onto its own label fires Leave too
+        if self._hovering and not self._inside():
+            self._hovering = False
+            self._paint_fill(self._fill)
+
+    def _click(self, _e=None):
+        if self._inside() and self._command:
+            self._command()
+
+    def configure(self, **kw):
+        mine = {}
+        for k in ("text", "glyph", "fg_color", "hover_color", "text_color",
+                  "glyph_color", "border_color", "key_fg", "key_border",
+                  "key_text"):
+            if k in kw:
+                mine[k] = kw.pop(k)
+        if kw:
+            super().configure(**kw)
+        if "text" in mine:
+            self._text.configure(text=mine["text"])
+        if "glyph" in mine:
+            self._glyph.configure(text=mine["glyph"])
+        if "text_color" in mine:
+            self._text.configure(text_color=mine["text_color"])
+        if "glyph_color" in mine:
+            self._glyph.configure(text_color=mine["glyph_color"])
+        if "border_color" in mine:
+            super().configure(border_color=mine["border_color"])
+        if "key_fg" in mine:
+            self._key.configure(fg_color=mine["key_fg"])
+            self._keytext.configure(bg_color=mine["key_fg"])
+        if "key_border" in mine:
+            self._key.configure(border_color=mine["key_border"])
+        if "key_text" in mine:
+            self._keytext.configure(text_color=mine["key_text"])
+        if "hover_color" in mine:
+            self._hover = mine["hover_color"]
+        if "fg_color" in mine:
+            self._fill = mine["fg_color"]
+        if "fg_color" in mine or "hover_color" in mine:
+            self._paint_fill(self._hover if self._hovering else self._fill)
+
+    config = configure
+
+
 class GlassMacro(ctk.CTk):
     def __init__(self):
         super().__init__()
         ctk.set_appearance_mode("dark")
         self.title(APP_NAME)
-        self.geometry("540x800")
-        self.minsize(500, 660)
+        self._fit_to_screen()
         self.configure(fg_color=BG)
         self._set_icon()
         self.after(50, self._style_titlebar)
@@ -841,200 +987,707 @@ class GlassMacro(ctk.CTk):
         except Exception:
             pass
 
+    def _fit_to_screen(self, want_h=820, min_h=720):
+        """540x820 where it fits; shorter where it doesn't.
+
+        A 1080p laptop at the usual 150% scaling has only about 688 logical
+        pixels above the taskbar, so a fixed 820 hung off the bottom of the
+        screen. CustomTkinter scales the size but not the position, so the
+        position is worked out in real pixels.
+        """
+        try:
+            s = ctk.ScalingTracker.get_window_scaling(self)
+        except Exception:
+            s = 1.0
+        try:
+            r = wintypes.RECT()
+            ctypes.windll.user32.SystemParametersInfoW(0x30, 0,
+                                                       ctypes.byref(r), 0)
+            left, top, w, h = r.left, r.top, r.right - r.left, r.bottom - r.top
+        except Exception:
+            left, top, (w, h) = 0, 0, screen_size()
+        room = int(h / s) - 48               # title bar and a little air
+        height = max(560, min(want_h, room))
+        self.minsize(500, max(560, min(min_h, room)))
+        x = left + max(0, (w - round(540 * s)) // 2)
+        y = top + max(0, (h - round((height + 32) * s)) // 2)
+        self.geometry(f"540x{height}+{x}+{y}")
+
+    # ------------------------------------------------------ fonts & sizes --
+    def _init_fonts(self):
+        """Segoe UI Variable on Windows 11, plain Segoe UI on Windows 10.
+
+        Tk only knows normal and bold, so semibold has to be its own family.
+        """
+        try:
+            fams = set(tkfont.families(self))
+        except Exception:
+            fams = set()
+        if "Segoe UI Variable Text" in fams:
+            self._fam = "Segoe UI Variable Text"
+        else:
+            self._fam = "Segoe UI"
+        if "Segoe UI Variable Text Semibold" in fams:
+            self._fam_semi = "Segoe UI Variable Text Semibold"
+        elif "Segoe UI Semibold" in fams:
+            self._fam_semi = "Segoe UI Semibold"
+        else:
+            self._fam_semi = self._fam
+        self._fam_sym = "Segoe UI Symbol" if "Segoe UI Symbol" in fams \
+            else self._fam
+        self._fonts = {}
+
+    def F(self, size, semi=False, bold=False, family=None):
+        key = (size, semi, bold, family)
+        if key not in self._fonts:
+            fam = family or (self._fam_semi if semi else self._fam)
+            self._fonts[key] = ctk.CTkFont(family=fam, size=size,
+                                           weight="bold" if bold else "normal")
+        return self._fonts[key]
+
+    def _px(self, n):
+        """Scale a raw Tk (canvas / text tag) size for Windows display
+        scaling. CustomTkinter scales its own widgets; plain Tk ones it
+        does not."""
+        try:
+            return max(1, round(n * ctk.ScalingTracker.get_widget_scaling(self)))
+        except Exception:
+            return n
+
+    def _tkfont(self, size, semi=False, family=None):
+        fam = family or (self._fam_semi if semi else self._fam)
+        return (fam, -self._px(size))
+
+    # ------------------------------------------------------------- build --
     def _build(self):
-        # ---- header ----
-        head = ctk.CTkFrame(self, fg_color="transparent")
-        head.pack(fill="x", padx=24, pady=(20, 14))
-        mark = ctk.CTkFrame(head, fg_color="transparent")
-        mark.pack(side="left")
-        ctk.CTkLabel(mark, text="Glass", text_color=ACCENT,
-                     font=ctk.CTkFont(size=24, weight="bold")).pack(side="left")
-        ctk.CTkLabel(mark, text="Macro", text_color=TEXT,
-                     font=ctk.CTkFont(size=24, weight="bold")).pack(side="left")
-        ctk.CTkLabel(mark, text=f"v{APP_VER}", text_color=MUTED,
-                     font=ctk.CTkFont(size=11)
-                     ).pack(side="left", padx=(8, 0), pady=(9, 0))
+        self._init_fonts()
+        self._setup_active = False          # the weapon guide is mid-flow
+        self._guide = {"step": 0, "done": set(), "t0": 0.0, "msg": "",
+                       "msg_colour": SUBTLE, "bad": 0}
+        self._guide_visible = None
+        self._run_t0 = None                 # start of the current / last run
+        self._was_running = False
+        self._last_run = None
+        self._dot_colour = MUTED
+        self._run_mode = "IDLE"
+        self._state_title = ""
+        self._state_since = 0.0
+        self._pulse_t = 0.0
+        self._feed_top = None
+        self._feed_rows = 0
+        self._tab = "activity"
+        self._full_log = False
+        self._slider_guard = False
 
-        chip = ctk.CTkFrame(head, fg_color=CARD, corner_radius=14,
-                            border_width=1, border_color=LINE)
-        chip.pack(side="right")
-        self.dot = ctk.CTkLabel(chip, text="\u25cf", text_color=MUTED,
-                                font=ctk.CTkFont(size=12))
-        self.dot.pack(side="left", padx=(12, 6), pady=6)
-        self.pill = ctk.CTkLabel(chip, text="IDLE", text_color=SUBTLE,
-                                 font=ctk.CTkFont(size=11, weight="bold"))
-        self.pill.pack(side="left", padx=(0, 14), pady=6)
+        sw, sh = screen_size()
+        self._screen_ok = (sw, sh) == SUPPORTED_SCREEN
 
-        # ---- status: the one thing the main screen is for ----
-        card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=18,
-                            border_width=1, border_color=LINE)
-        card.pack(fill="x", padx=24)
-        self.lbl_state = ctk.CTkLabel(card, text="Ready", text_color=TEXT,
-                                      anchor="w",
-                                      font=ctk.CTkFont(size=22, weight="bold"))
-        self.lbl_state.pack(fill="x", padx=22, pady=(20, 2))
-        self.lbl_detail = ctk.CTkLabel(card, text="", text_color=SUBTLE,
-                                       anchor="w", justify="left",
-                                       wraplength=440,
-                                       font=ctk.CTkFont(size=12))
-        self.lbl_detail.pack(fill="x", padx=22)
+        # ---- header: gem, wordmark, version, screen ----
+        head = ctk.CTkFrame(self, fg_color="transparent", height=44)
+        head.pack(fill="x", padx=20, pady=(8, 4))
+        gem = tk.Canvas(head, width=self._px(20), height=self._px(20), bg=BG,
+                        highlightthickness=0, bd=0)
+        draw_gem(gem, 0, 0, self._px(20))
+        gem.pack(side="left", pady=10)
+        ctk.CTkLabel(head, text="Glass", text_color=ACCENT,
+                     font=self.F(15, semi=True)).pack(side="left",
+                                                      padx=(8, 0))
+        ctk.CTkLabel(head, text="Macro", text_color=TEXT,
+                     font=self.F(15, semi=True)).pack(side="left")
+        ctk.CTkLabel(head, text=APP_VER, text_color=MUTED,
+                     font=self.F(11)).pack(side="left", padx=(6, 0),
+                                           pady=(3, 0))
+        ctk.CTkLabel(
+            head, font=self.F(11),
+            text=("1920×1080" if self._screen_ok
+                  else f"{sw}×{sh} · made for 1920×1080"),
+            text_color=MUTED if self._screen_ok else AMBER,
+        ).pack(side="right")
 
-        stats = ctk.CTkFrame(card, fg_color="transparent")
-        stats.pack(fill="x", padx=16, pady=(18, 0))
-        for c in range(3):
-            stats.grid_columnconfigure(c, weight=1, uniform="stat")
-        self.val_time = self._stat(stats, 0, "0:00:00", "Running")
-        self.val_picks = self._stat(stats, 1, "0", "Loadouts")
-        self.val_joins = self._stat(stats, 2, "0", "Rejoins")
+        self.main = ctk.CTkFrame(self, fg_color="transparent")
+        self.main.pack(fill="both", expand=True, padx=20, pady=(0, 16))
 
-        self.btn_run = ctk.CTkButton(card, text="Start    F8", height=52,
-                                     corner_radius=14, fg_color=ACCENT,
-                                     hover_color=ACCENT_SOFT, text_color=INK,
-                                     font=ctk.CTkFont(size=15, weight="bold"),
-                                     command=self.toggle_run)
-        self.btn_run.pack(fill="x", padx=22, pady=(18, 22))
+        self._build_hero()
+        self._build_guide()
+        self._build_weapons()
+        self._build_tabs()
+        self._build_activity()
+        self._build_settings()
 
-        # ---- setup: one row, not a tutorial ----
-        setup = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14,
-                             border_width=1, border_color=LINE)
-        setup.pack(fill="x", padx=24, pady=(12, 0))
-        left = ctk.CTkFrame(setup, fg_color="transparent")
-        left.pack(side="left", fill="x", expand=True, padx=(18, 8), pady=12)
-        ctk.CTkLabel(left, text="Weapons", text_color=TEXT, anchor="w",
-                     font=ctk.CTkFont(size=13, weight="bold")).pack(fill="x")
-        self.lbl_cal = ctk.CTkLabel(left, text="", text_color=SUBTLE,
-                                    anchor="w", justify="left", wraplength=320,
-                                    font=ctk.CTkFont(size=11))
+        self._show_tab("activity")
+        self._show_cal()
+        self._show_ffa()
+        self._show_playtime(None)
+        self._tick()
+        self._animate()
+
+    # ---- the status card ----
+    def _card(self, parent, **kw):
+        opts = dict(fg_color=CARD, corner_radius=16, border_width=1,
+                    border_color=LINE)
+        opts.update(kw)
+        return ctk.CTkFrame(parent, **opts)
+
+    def _sheen(self, card):
+        """A 1px lighter line along the card's top edge - the glass edge."""
+        # plain Tk: CustomTkinter will not size a widget from place()
+        line = tk.Frame(card, height=1, bg=SHEEN, bd=0, highlightthickness=0)
+        line.place(x=self._px(18), y=self._px(1), relwidth=1.0,
+                   width=-self._px(36))
+
+    def _build_hero(self):
+        self.hero = self._card(self.main)
+        self._sheen(self.hero)
+        body = ctk.CTkFrame(self.hero, fg_color="transparent")
+        body.pack(fill="x", padx=18, pady=18)
+
+        top = ctk.CTkFrame(body, fg_color="transparent")
+        top.pack(fill="x")
+        d = self._px(16)
+        self.dotc = tk.Canvas(top, width=d, height=d, bg=CARD,
+                              highlightthickness=0, bd=0)
+        self.dotc.pack(side="left", padx=(0, 10))
+        c = d / 2
+        self._halo = self.dotc.create_oval(c, c, c, c, fill=CARD, outline="")
+        r = self._px(4)
+        self._core = self.dotc.create_oval(c - r, c - r, c + r, c + r,
+                                           fill=MUTED, outline="")
+        self.lbl_state = ctk.CTkLabel(top, text="Ready", text_color=TEXT,
+                                      font=self.F(18, semi=True), anchor="w",
+                                      height=24)
+        self.lbl_state.pack(side="left")
+        self.lbl_since = ctk.CTkLabel(top, text="", text_color=MUTED,
+                                      font=self.F(11), height=24)
+        self.lbl_since.pack(side="right")
+        self.lbl_detail = ctk.CTkLabel(body, text="", text_color=SUBTLE,
+                                       font=self.F(12), anchor="w",
+                                       justify="left", wraplength=420,
+                                       height=18)
+        self.lbl_detail.pack(fill="x", padx=(26, 0), pady=(2, 0))
+        self._rewrap_on(body, (self.lbl_detail,), indent=26)
+
+        # stat strip: playtime gets the room, the counters sit beside it
+        strip = ctk.CTkFrame(body, fg_color=INSET, corner_radius=12,
+                             border_width=1, border_color=HAIRLINE)
+        strip.pack(fill="x", pady=(16, 0))
+        strip.grid_columnconfigure(0, weight=2, uniform="s")
+        strip.grid_columnconfigure(2, weight=1, uniform="s")
+        strip.grid_columnconfigure(4, weight=1, uniform="s")
+
+        play = ctk.CTkFrame(strip, fg_color="transparent")
+        play.grid(row=0, column=0, sticky="nsew", padx=(16, 12), pady=12)
+        self.lbl_play_cap = ctk.CTkLabel(play, text="PLAYTIME",
+                                         text_color=MUTED, height=14,
+                                         font=self.F(11, semi=True),
+                                         anchor="w")
+        self.lbl_play_cap.pack(fill="x")
+        num = ctk.CTkFrame(play, fg_color="transparent")
+        num.pack(fill="x", pady=(2, 0))
+        self._num = []
+        for i, (size, colour) in enumerate(((32, TEXT), (17, SUBTLE),
+                                            (32, TEXT), (17, SUBTLE))):
+            lbl = ctk.CTkLabel(num, text="", text_color=colour, height=38,
+                               font=self.F(size, bold=size > 20),
+                               anchor="sw")
+            lbl.pack(side="left", anchor="s",
+                     padx=(6 if i == 2 else 0, 0),
+                     pady=(0, 5 if size < 20 else 0))
+            self._num.append(lbl)
+        self.bar_hour = ctk.CTkProgressBar(play, width=10, height=2,
+                                           corner_radius=1,
+                                           progress_color=ACCENT,
+                                           fg_color=HAIRLINE)
+        self.bar_hour.pack(fill="x", pady=(8, 0))
+        self.bar_hour.set(0)
+        self.lbl_play_sub = ctk.CTkLabel(play, text="", text_color=MUTED,
+                                         font=self.F(11), anchor="w",
+                                         height=16)
+        self.lbl_play_sub.pack(fill="x", pady=(4, 0))
+
+        for col in (1, 3):
+            ctk.CTkFrame(strip, width=1, height=1, fg_color=HAIRLINE,
+                         corner_radius=0
+                         ).grid(row=0, column=col, sticky="ns", pady=1)
+        self.val_picks = self._counter(strip, 2, "LOADOUTS")
+        self.val_joins = self._counter(strip, 4, "REJOINS")
+
+        self.btn_run = GlassButton(body, self.toggle_run,
+                                   font=self.F(14, semi=True),
+                                   glyph_font=self.F(11, family=self._fam_sym),
+                                   key_font=self.F(11, semi=True,
+                                                   family="Consolas"))
+        self.btn_run.pack(fill="x", pady=(16, 0))
+
+    def _counter(self, parent, col, caption):
+        f = ctk.CTkFrame(parent, fg_color="transparent")
+        f.grid(row=0, column=col, sticky="nw", padx=16, pady=12)
+        ctk.CTkLabel(f, text=caption, text_color=MUTED, height=14,
+                     font=self.F(11, semi=True), anchor="w").pack(fill="x")
+        v = ctk.CTkLabel(f, text="0", text_color=TEXT, height=30,
+                         font=self.F(22, semi=True), anchor="w")
+        v.pack(fill="x", pady=(6, 0))
+        return v
+
+    # ---- the weapon setup guide (shown instead of the status card) ----
+    STEPS = (
+        ("The Random tile", "Top-left of the weapon grid."),
+        ("The Grenade Launcher",
+         "Hover the Grenade Launcher button itself."),
+        ("Your first loadout slot", "The first slot along the top."),
+    )
+
+    def _build_guide(self):
+        self.guide = self._card(self.main)
+        self._sheen(self.guide)
+        body = ctk.CTkFrame(self.guide, fg_color="transparent")
+        body.pack(fill="x", padx=18, pady=18)
+
+        top = ctk.CTkFrame(body, fg_color="transparent")
+        top.pack(fill="x")
+        ctk.CTkLabel(top, text="Set up your weapons", text_color=TEXT,
+                     font=self.F(18, semi=True), height=24).pack(side="left")
+        ctk.CTkLabel(top, text="one time · about 30 seconds",
+                     text_color=MUTED, font=self.F(11), height=24
+                     ).pack(side="right")
+        self.lbl_intro = ctk.CTkLabel(
+            body, text=("Open the weapon picker in Rivals, hover each thing "
+                        "below and press F8. Don't click."),
+            text_color=SUBTLE, font=self.F(12), anchor="w", justify="left",
+            wraplength=470, height=18)
+        self.lbl_intro.pack(fill="x", pady=(4, 0))
+        self._guide_body = body
+
+        if not self._screen_ok:
+            warn = ctk.CTkFrame(body, fg_color=AMBER_DIM, corner_radius=10)
+            warn.pack(fill="x", pady=(12, 0))
+            sw, sh = screen_size()
+            ctk.CTkLabel(warn, text=(f"This screen is {sw}×{sh}. GlassMacro "
+                                     f"only works on 1920×1080 for now."),
+                         text_color=AMBER, font=self.F(12), anchor="w",
+                         height=18).pack(fill="x", padx=12, pady=8)
+
+        prog = ctk.CTkFrame(body, fg_color="transparent")
+        prog.pack(fill="x", pady=(14, 0))
+        self._segs = []
+        for i in range(3):
+            prog.grid_columnconfigure(i, weight=1, uniform="p")
+            seg = ctk.CTkFrame(prog, width=1, height=4, corner_radius=2,
+                               fg_color=LINE)
+            seg.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 3,
+                                                         0 if i == 2 else 3))
+            self._segs.append(seg)
+
+        self._step_rows = []
+        for i, (title, note) in enumerate(self.STEPS):
+            row = ctk.CTkFrame(body, corner_radius=12, border_width=1,
+                               fg_color="transparent", border_color=HAIRLINE)
+            row.pack(fill="x", pady=(10 if i == 0 else 8, 0))
+            inner = ctk.CTkFrame(row, fg_color="transparent")
+            inner.pack(fill="x", padx=12, pady=10)
+            # a real circle - a CTkLabel with rounded corners came out as a
+            # pill once its text padding was added
+            badge = tk.Canvas(inner, width=self._px(26), height=self._px(26),
+                              bg=CARD, highlightthickness=0, bd=0)
+            badge.pack(side="left", anchor="n")
+            txt = ctk.CTkFrame(inner, fg_color="transparent")
+            txt.pack(side="left", fill="x", expand=True, padx=(10, 0),
+                     anchor="n", pady=(3, 0))
+            t = ctk.CTkLabel(txt, text=title, text_color=TEXT, height=18,
+                             font=self.F(13, semi=True), anchor="w")
+            t.pack(fill="x")
+            n = ctk.CTkLabel(txt, text=note, text_color=SUBTLE, height=16,
+                             font=self.F(11), anchor="w", justify="left",
+                             wraplength=230)
+            n.pack(fill="x")
+            pic = tk.Canvas(inner, width=self._px(170), height=self._px(92),
+                            bg=CARD, highlightthickness=0, bd=0)
+            self._draw_picker(pic, i, CARD)
+            self._step_rows.append({"row": row, "inner": inner,
+                                    "badge": badge, "title": t, "note": n,
+                                    "pic": pic, "txt": txt})
+
+        self.lbl_guide = ctk.CTkLabel(body, text="", text_color=SUBTLE,
+                                      font=self.F(12), anchor="w",
+                                      justify="left", wraplength=440,
+                                      height=18)
+        self.lbl_guide.pack(fill="x", pady=(12, 0))
+        self.btn_cal = ctk.CTkButton(
+            body, text="I'm on the weapon picker · start setup",
+            height=46, corner_radius=12, fg_color=ACCENT,
+            hover_color=ACCENT_SOFT, text_color=INK,
+            text_color_disabled=SUBTLE, font=self.F(14, semi=True),
+            command=self.calibrate)
+        self.btn_cal.pack(fill="x", pady=(10, 0))
+        self._rewrap_on(self._guide_body, (self.lbl_intro, self.lbl_guide))
+
+    def _rewrap(self, width_px, labels, indent=0):
+        w = width_px / max(0.5, ctk.ScalingTracker.get_widget_scaling(self))
+        for lbl in labels:
+            lbl.configure(wraplength=max(120, int(w - indent - 6)))
+
+    def _rewrap_on(self, frame, labels, indent=0):
+        """Wrap text to the width it really has. A fixed wraplength wider
+        than the label clips the end off instead of wrapping - at the 500px
+        minimum that cut "Don't click." down to "Do". Bound on the frame's
+        canvas, never on a label, whose width follows its own wrapping."""
+        frame.bind("<Configure>",
+                   lambda e: self._rewrap(e.width, labels, indent), add="+")
+
+    def _draw_picker(self, cv, step, bg):
+        """A tiny weapon picker with the thing to hover outlined.
+
+        A drawing, not a screenshot - it only has to show WHERE, and it cannot
+        go out of date the way a picture of the real menu would.
+        """
+        cv.delete("all")
+        cv.configure(bg=bg)
+        p = self._px
+        tile, bar, slot = "#22314a", "#2f4260", "#22314a"
+        # the loadout slots along the top
+        for i in range(4):
+            x = p(8) + i * p(22)
+            cv.create_rectangle(x, p(6), x + p(16), p(18), fill=slot,
+                                outline="")
+        # the weapon grid, each tile with its name bar under it
+        for r in range(2):
+            for c in range(5):
+                x = p(8) + c * p(31)
+                y = p(28) + r * p(32)
+                cv.create_rectangle(x, y, x + p(25), y + p(20), fill=tile,
+                                    outline="")
+                cv.create_rectangle(x, y + p(23), x + p(25), y + p(27),
+                                    fill=bar, outline="")
+        if step == 0:                            # Random: top-left tile
+            box = (p(6), p(26), p(35), p(50))
+        elif step == 1:                          # the launcher's button
+            x = p(8) + 2 * p(31)
+            box = (x - p(2), p(26), x + p(27), p(28) + p(29))
+        else:                                    # first loadout slot
+            box = (p(6), p(4), p(26), p(20))
+        cv.create_rectangle(*box, outline=ACCENT, width=p(2))
+        bx, by = box[2] + p(4), box[1] - p(2)
+        bx = min(bx, p(170) - p(16))
+        by = max(by, p(2))
+        cv.create_oval(bx, by, bx + p(14), by + p(14), fill=ACCENT,
+                       outline="")
+        cv.create_text(bx + p(7), by + p(7), text=str(step + 1), fill=INK,
+                       font=self._tkfont(9, semi=True))
+
+    # ---- weapons row (once set up) ----
+    def _build_weapons(self):
+        self.weap = self._card(self.main, corner_radius=14)
+        inner = ctk.CTkFrame(self.weap, fg_color="transparent")
+        inner.pack(fill="x", padx=14, pady=12)
+        self.weap_tile = ctk.CTkLabel(inner, text="✓", width=30,
+                                      height=30, corner_radius=9,
+                                      fg_color=GREEN_DIM, text_color=GREEN,
+                                      font=self.F(13, family=self._fam_sym))
+        self.weap_tile.pack(side="left")
+        txt = ctk.CTkFrame(inner, fg_color="transparent")
+        txt.pack(side="left", fill="x", expand=True, padx=(12, 0))
+        self.lbl_weap = ctk.CTkLabel(txt, text="Weapons ready", height=18,
+                                     text_color=TEXT, anchor="w",
+                                     font=self.F(13, semi=True))
+        self.lbl_weap.pack(fill="x")
+        self.lbl_cal = ctk.CTkLabel(txt, text="", text_color=SUBTLE, height=16,
+                                    font=self.F(11), anchor="w")
         self.lbl_cal.pack(fill="x")
-        self.btn_cal = ctk.CTkButton(setup, text="Set up", width=116, height=34,
-                                     corner_radius=10, fg_color="transparent",
-                                     hover_color=CARD_HI, border_width=1,
-                                     border_color=LINE, text_color=TEXT,
-                                     command=self.calibrate)
-        self.btn_cal.pack(side="right", padx=14)
+        self.btn_redo = ctk.CTkButton(inner, text="Redo setup", width=92,
+                                      height=30, corner_radius=10,
+                                      fg_color="transparent",
+                                      hover_color=CARD_HI, text_color=SUBTLE,
+                                      font=self.F(12), command=self.calibrate)
+        self.btn_redo.pack(side="right")
 
-        # ---- activity and settings ----
-        tabs = self.tabs = ctk.CTkTabview(
-            self, fg_color=PANEL, corner_radius=14, border_width=1,
-            border_color=LINE, segmented_button_fg_color=BG,
-            segmented_button_unselected_color=BG,
-            segmented_button_unselected_hover_color=CARD_HI,
-            segmented_button_selected_color=ACCENT_DEEP,
-            segmented_button_selected_hover_color=ACCENT,
-            text_color=TEXT, height=230)
-        tabs.pack(fill="both", expand=True, padx=24, pady=(12, 20))
-        t_log = tabs.add("Activity")
-        t_set = tabs.add("Settings")
+    # ---- tabs ----
+    def _build_tabs(self):
+        self.tabbar = ctk.CTkFrame(self.main, fg_color="transparent")
+        self.tabbar.pack(fill="x", pady=(20, 0))
+        row = ctk.CTkFrame(self.tabbar, fg_color="transparent")
+        row.pack(fill="x", padx=4)
+        self._tab_labels = {}
+        for key, text in (("activity", "Activity"), ("settings", "Settings")):
+            col = ctk.CTkFrame(row, fg_color="transparent")
+            col.pack(side="left", padx=(0, 22))
+            lbl = ctk.CTkLabel(col, text=text, font=self.F(13, semi=True),
+                               text_color=MUTED, height=20, cursor="hand2")
+            lbl.pack()
+            under = ctk.CTkFrame(col, width=1, height=2, corner_radius=1,
+                                 fg_color="transparent")
+            under.pack(fill="x", pady=(6, 0))
+            lbl.bind("<Button-1>", lambda _e, k=key: self._show_tab(k))
+            self._tab_labels[key] = (lbl, under)
+        self.lnk_log = ctk.CTkLabel(row, text="Full log ›",
+                                    text_color=MUTED, font=self.F(11),
+                                    height=20, cursor="hand2")
+        self.lnk_log.pack(side="right", anchor="n")
+        self.lnk_log.bind("<Button-1>", lambda _e: self._toggle_full_log())
+        ctk.CTkFrame(self.tabbar, height=1, fg_color=HAIRLINE,
+                     corner_radius=0).pack(fill="x", padx=4)
 
-        self.txt = ctk.CTkTextbox(t_log, fg_color=BG, text_color="#c3cfdd",
+    def _show_tab(self, key):
+        self._tab = key
+        for k, (lbl, under) in self._tab_labels.items():
+            on = k == key
+            lbl.configure(text_color=TEXT if on else MUTED)
+            under.configure(fg_color=ACCENT if on else "transparent")
+        if key == "activity":
+            self.set_page.pack_forget()
+            self.act_page.pack(fill="both", expand=True, pady=(12, 0))
+            self.lnk_log.pack(side="right", anchor="n")
+        else:
+            self.act_page.pack_forget()
+            self.lnk_log.pack_forget()
+            self.set_page.pack(fill="both", expand=True, pady=(8, 0))
+
+    # ---- activity: a readable feed, with the raw log one click away ----
+    def _build_activity(self):
+        self.act_page = ctk.CTkFrame(self.main, fg_color="transparent")
+        # packed first, from the bottom, so a short window squeezes the feed
+        # rather than pushing this line off the end
+        self.lbl_foot = ctk.CTkLabel(self.act_page,
+                                     text="Newest first · every detail "
+                                          "is in Full log",
+                                     text_color=MUTED, font=self.F(11),
+                                     height=16)
+        self.lbl_foot.pack(side="bottom", pady=(8, 0))
+        box = ctk.CTkFrame(self.act_page, fg_color=PANEL, corner_radius=14,
+                           border_width=1, border_color=LINE)
+        box.pack(fill="both", expand=True)
+        self._act_box = box
+
+        self.feed = ctk.CTkTextbox(box, fg_color=PANEL, text_color=TEXT,
+                                   border_width=0, wrap="none",
+                                   font=self.F(13), activate_scrollbars=True,
+                                   scrollbar_button_color=LINE,
+                                   scrollbar_button_hover_color=MUTED)
+        self.feed.pack(fill="both", expand=True, padx=8, pady=6)
+        tb = self.feed._textbox
+        tb.configure(spacing1=self._px(7), spacing3=self._px(7),
+                     tabs=(self._px(46), self._px(68)), cursor="arrow")
+        tb.tag_configure("ts", foreground=MUTED,
+                         font=self._tkfont(11, family="Consolas"))
+        for name, colour in (("g_GREEN", GREEN), ("g_ACCENT", ACCENT),
+                             ("g_AMBER", AMBER), ("g_RED", RED),
+                             ("g_SUBTLE", SUBTLE)):
+            tb.tag_configure(name, foreground=colour,
+                             font=self._tkfont(11, family=self._fam_sym))
+        tb.tag_configure("title", foreground=TEXT, font=self._tkfont(13))
+        tb.tag_configure("sub", foreground=SUBTLE, font=self._tkfont(11))
+        tb.tag_configure("chip", foreground=ACCENT_SOFT,
+                         font=self._tkfont(11, semi=True))
+        self.feed.configure(state="disabled")
+
+        # empty state, laid over the feed until the first event
+        self.empty = ctk.CTkFrame(box, fg_color=PANEL)
+        self._empty_gem = tk.Canvas(self.empty, width=self._px(40),
+                                    height=self._px(40), bg=PANEL,
+                                    highlightthickness=0, bd=0)
+        draw_gem(self._empty_gem, 0, 0, self._px(40), dim=True)
+        self._empty_gem.pack(pady=(0, 10))
+        self._empty_title = ctk.CTkLabel(self.empty, text="Nothing yet",
+                                         text_color=TEXT, height=18,
+                                         font=self.F(13, semi=True))
+        self._empty_title.pack()
+        ctk.CTkLabel(self.empty, text="Press Start with Rivals open. Events "
+                     "show up here.", text_color=SUBTLE, font=self.F(11),
+                     height=16).pack(pady=(2, 0))
+        self.empty.place(relx=0.5, rely=0.46, anchor="center")
+        box.bind("<Configure>", self._fit_empty, add="+")
+
+        # the raw log - every line, timestamped, for bug reports
+        self.txt = ctk.CTkTextbox(box, fg_color=PANEL, text_color="#c3cfdd",
                                   border_width=0, wrap="word",
-                                  font=ctk.CTkFont(family="Consolas", size=11))
-        self.txt.pack(fill="both", expand=True, padx=4, pady=4)
+                                  font=ctk.CTkFont(family="Consolas", size=11),
+                                  scrollbar_button_color=LINE,
+                                  scrollbar_button_hover_color=MUTED)
         self.txt.tag_config("ts", foreground=MUTED)
         self.txt.tag_config("top", foreground="#d5e0ec")
         self.txt.tag_config("sub", foreground=SUBTLE)
         self.txt.configure(state="disabled")
 
-        sp = ctk.CTkScrollableFrame(t_set, fg_color="transparent")
-        sp.pack(fill="both", expand=True)
+    def _fit_empty(self, e):
+        """In a short box (setup guide showing, small window) the gem would
+        overlap the border - keep just the words."""
+        small = e.height < self._px(150)
+        shown = bool(self._empty_gem.winfo_manager())
+        if small and shown:
+            self._empty_gem.pack_forget()
+        elif not small and not shown:
+            self._empty_gem.pack(pady=(0, 10), before=self._empty_title)
 
-        self.sw_fullscreen = self._switch(
-            sp, "Keep Roblox fullscreen",
-            "Presses F11 if Roblox is in a window - every click is lined up "
-            "for fullscreen. Gives up after two tries rather than keep "
-            "flipping it.")
-        self.sw_reconnect = self._switch(
-            sp, "Reconnect automatically",
-            "Handles Disconnected and Connection Failed. If Retry doesn't get "
-            "you back in, it restarts Roblox and rejoins.")
-        self.sw_shots = self._switch(
-            sp, "Save pictures of what it clicks",
-            "Every loadout pick, plus any disconnect dialog or Join prompt it "
-            "clicks - newest 40 of each, in the data folder. Shows exactly "
-            "what it saw if something ever goes wrong.")
+    def _toggle_full_log(self):
+        self._full_log = not self._full_log
+        if self._full_log:
+            self.feed.pack_forget()
+            self.empty.place_forget()
+            self.txt.pack(fill="both", expand=True, padx=8, pady=6)
+            self.txt.see("end")
+            self.lnk_log.configure(text="‹ Activity")
+            self.lbl_foot.configure(text="Every line, oldest first · "
+                                         "also saved to log.txt")
+        else:
+            self.txt.pack_forget()
+            self.feed.pack(fill="both", expand=True, padx=8, pady=6)
+            if not self._feed_rows:
+                self.empty.place(relx=0.5, rely=0.46, anchor="center")
+            self.lnk_log.configure(text="Full log ›")
+            self.lbl_foot.configure(text="Newest first · every detail "
+                                         "is in Full log")
 
-        self._section(sp, "Detection")
-        r = ctk.CTkFrame(sp, fg_color="transparent")
-        r.pack(fill="x", pady=(2, 0))
-        ctk.CTkLabel(r, text="Threshold", text_color=SUBTLE,
-                     font=ctk.CTkFont(size=12)).pack(side="left", padx=(0, 8))
-        self.e_thresh = ctk.CTkEntry(r, width=64, height=30, border_color=LINE,
-                                     fg_color=CARD_HI)
-        self.e_thresh.pack(side="left")
-        self.e_thresh.insert(0, str(self._saved_threshold()))
-        self.btn_watch = ctk.CTkButton(r, text="Test", width=84, height=30,
-                                       corner_radius=10, fg_color="transparent",
-                                       hover_color=CARD_HI, border_width=1,
-                                       border_color=LINE, text_color=TEXT,
-                                       command=self.toggle_watch)
-        self.btn_watch.pack(side="right")
-        self._note(sp, "Test shows the match score live without clicking "
-                       "anything. With the weapon picker open it should read "
-                       "near 1.00; the threshold sits between that and the "
-                       "score with it closed.")
-        self.lbl_score = ctk.CTkLabel(sp, text="", text_color=MUTED,
-                                      justify="left", anchor="w",
-                                      font=ctk.CTkFont(size=11,
-                                                       family="Consolas"))
-        self.lbl_score.pack(fill="x", pady=(4, 0))
+    # ---- settings: grouped cards ----
+    def _build_settings(self):
+        self.set_page = ctk.CTkScrollableFrame(
+            self.main, fg_color="transparent", scrollbar_button_color=LINE,
+            scrollbar_button_hover_color=MUTED)
+        sp = self.set_page
 
-        self._section(sp, "Way back into Free For All")
-        r2 = ctk.CTkFrame(sp, fg_color="transparent")
-        r2.pack(fill="x", pady=(2, 0))
-        self.lbl_ffa = ctk.CTkLabel(r2, text="", text_color=SUBTLE, anchor="w",
-                                    font=ctk.CTkFont(size=12))
-        self.lbl_ffa.pack(side="left", fill="x", expand=True)
-        self.btn_ffa = ctk.CTkButton(r2, text="Re-teach", width=96, height=30,
-                                     corner_radius=10, fg_color="transparent",
-                                     hover_color=CARD_HI, border_width=1,
-                                     border_color=LINE, text_color=TEXT,
-                                     command=self.teach_ffa)
+        self._group(sp, "WHILE IT RUNS")
+        card = self._card(sp, corner_radius=14)
+        card.pack(fill="x")
+        self.sw_fullscreen = self._switch_row(
+            card, "Keep Roblox fullscreen",
+            "Presses F11 if Roblox ends up windowed.", first=True)
+        self.sw_reconnect = self._switch_row(
+            card, "Reconnect automatically",
+            "Clicks Reconnect, or restarts Roblox.")
+        self.sw_shots = self._switch_row(
+            card, "Save screenshots",
+            "Newest 40 of each, handy if a pick misses.")
+
+        self._group(sp, "DETECTION")
+        card = self._card(sp, corner_radius=14)
+        card.pack(fill="x")
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(fill="x", padx=14, pady=12)
+        r = ctk.CTkFrame(inner, fg_color="transparent")
+        r.pack(fill="x")
+        ctk.CTkLabel(r, text="Match sensitivity", text_color=TEXT,
+                     font=self.F(13), height=20).pack(side="left")
+        self.e_thresh = ctk.CTkEntry(r, width=56, height=24, corner_radius=6,
+                                     border_width=1, border_color=KEYCAP_LINE,
+                                     fg_color=PANEL, text_color=TEXT,
+                                     justify="right",
+                                     font=self.F(11, semi=True,
+                                                 family="Consolas"))
+        self.e_thresh.pack(side="right")
+        self.e_thresh.insert(0, f"{self._saved_threshold():.2f}")
+        self.e_thresh.bind("<Return>", self._entry_to_slider)
+        self.e_thresh.bind("<FocusOut>", self._entry_to_slider)
+        self.sld_thresh = ctk.CTkSlider(inner, from_=0.60, to=0.95,
+                                        number_of_steps=35, height=16,
+                                        progress_color=ACCENT,
+                                        fg_color=LINE, button_color=TEXT,
+                                        button_hover_color=ACCENT_SOFT,
+                                        command=self._slider_to_entry)
+        self.sld_thresh.pack(fill="x", pady=(10, 0))
+        self._entry_to_slider()
+        ctk.CTkLabel(inner, text="Leave it at 0.82 unless picks get skipped.",
+                     text_color=SUBTLE, font=self.F(11), anchor="w",
+                     height=16).pack(fill="x", pady=(4, 0))
+        r = ctk.CTkFrame(inner, fg_color="transparent")
+        r.pack(fill="x", pady=(10, 0))
+        self.btn_watch = self._ghost(r, "Live test", self.toggle_watch)
+        self.btn_watch.pack(side="left", anchor="n")
+        well = ctk.CTkFrame(r, fg_color=INSET, corner_radius=8)
+        well.pack(side="left", fill="x", expand=True, padx=(10, 0))
+        self.lbl_score = ctk.CTkLabel(
+            well, text="Open the weapon picker, then press Live test.",
+            text_color=MUTED, justify="left", anchor="w", height=20,
+            font=ctk.CTkFont(family="Consolas", size=11))
+        self.lbl_score.pack(fill="x", padx=10, pady=5)
+
+        self._group(sp, "WAY BACK INTO FREE FOR ALL")
+        card = self._card(sp, corner_radius=14)
+        card.pack(fill="x")
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(fill="x", padx=14, pady=11)
+        ctk.CTkLabel(inner, text="✓", text_color=GREEN, width=18,
+                     font=self.F(13, family=self._fam_sym)).pack(side="left")
+        txt = ctk.CTkFrame(inner, fg_color="transparent")
+        txt.pack(side="left", fill="x", expand=True, padx=(8, 0))
+        self.lbl_ffa = ctk.CTkLabel(txt, text="Built in", text_color=TEXT,
+                                    font=self.F(13), anchor="w", height=18)
+        self.lbl_ffa.pack(fill="x")
+        ctk.CTkLabel(txt, text="Only re-teach if the lobby changes.",
+                     text_color=SUBTLE, font=self.F(11), anchor="w",
+                     height=16).pack(fill="x")
+        self.btn_ffa = self._ghost(inner, "Re-teach", self.teach_ffa)
         self.btn_ffa.pack(side="right")
-        self._note(sp, "Built in, so there is nothing to do here unless the "
-                       "lobby menu ever changes.")
 
-        self._section(sp, "Files")
-        ctk.CTkButton(sp, text="Open data folder", height=30, corner_radius=10,
-                      fg_color="transparent", hover_color=CARD_HI,
-                      border_width=1, border_color=LINE, text_color=TEXT,
-                      command=self.open_data).pack(anchor="w", pady=(2, 0))
-        self._note(sp, "Calibration, the log and any screenshots live here.")
+        self._group(sp, "FILES")
+        card = self._card(sp, corner_radius=14)
+        card.pack(fill="x")
+        inner = ctk.CTkFrame(card, fg_color="transparent", cursor="hand2")
+        inner.pack(fill="x", padx=14, pady=11)
+        txt = ctk.CTkFrame(inner, fg_color="transparent")
+        txt.pack(side="left", fill="x", expand=True)
+        a = ctk.CTkLabel(txt, text="Open data folder", text_color=TEXT,
+                         font=self.F(13), anchor="w", height=18)
+        a.pack(fill="x")
+        b = ctk.CTkLabel(txt, text="Setup, log and screenshots",
+                         text_color=SUBTLE, font=self.F(11), anchor="w",
+                         height=16)
+        b.pack(fill="x")
+        c = ctk.CTkLabel(inner, text="›", text_color=SUBTLE,
+                         font=self.F(16))
+        c.pack(side="right")
+        for w in (card, inner, txt, a, b, c):
+            w.bind("<Button-1>", lambda _e: self.open_data())
 
-        self._show_cal()
-        self._show_ffa()
-        self._tick()
+        ctk.CTkLabel(sp, text=(f"GlassMacro {APP_VER} · made for "
+                               f"1920×1080 · F8 starts and stops"),
+                     text_color=MUTED, font=self.F(11), height=16
+                     ).pack(pady=(18, 8))
 
-    # ---- little building blocks, so the layout above stays readable ----
-    def _stat(self, parent, col, value, label):
-        f = ctk.CTkFrame(parent, fg_color=CARD_HI, corner_radius=12)
-        f.grid(row=0, column=col, sticky="nsew", padx=6)
-        v = ctk.CTkLabel(f, text=value, text_color=TEXT,
-                         font=ctk.CTkFont(size=18, weight="bold"))
-        v.pack(pady=(12, 0))
-        ctk.CTkLabel(f, text=label, text_color=MUTED,
-                     font=ctk.CTkFont(size=11)).pack(pady=(0, 12))
-        return v
+    def _group(self, parent, title):
+        ctk.CTkLabel(parent, text=title, text_color=MUTED, anchor="w",
+                     font=self.F(11, semi=True), height=16
+                     ).pack(fill="x", padx=4, pady=(16, 6))
 
-    def _switch(self, parent, title, note):
-        sw = ctk.CTkSwitch(parent, text=title, text_color=TEXT,
-                           progress_color=ACCENT, button_color=TEXT,
-                           button_hover_color=ACCENT_SOFT,
-                           font=ctk.CTkFont(size=13))
-        sw.pack(anchor="w", pady=(12, 0))
+    def _ghost(self, parent, text, command):
+        return ctk.CTkButton(parent, text=text, width=84, height=30,
+                             corner_radius=10, fg_color="transparent",
+                             hover_color=CARD_HI, border_width=1,
+                             border_color=LINE, text_color=TEXT,
+                             font=self.F(12), command=command)
+
+    def _switch_row(self, card, title, note, first=False):
+        if not first:
+            ctk.CTkFrame(card, height=1, fg_color=HAIRLINE,
+                         corner_radius=0).pack(fill="x", padx=1)
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=10)
+        sw = ctk.CTkSwitch(row, text="", width=40, switch_width=34,
+                           switch_height=18, progress_color=ACCENT,
+                           fg_color=LINE, button_color=TEXT,
+                           button_hover_color=ACCENT_SOFT)
+        sw.pack(side="right")
         sw.select()
-        self._note(parent, note, indent=50)
+        txt = ctk.CTkFrame(row, fg_color="transparent")
+        txt.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(txt, text=title, text_color=TEXT, font=self.F(13),
+                     anchor="w", height=18).pack(fill="x")
+        ctk.CTkLabel(txt, text=note, text_color=SUBTLE, font=self.F(11),
+                     anchor="w", height=16).pack(fill="x")
         return sw
 
-    def _note(self, parent, text, indent=0):
-        ctk.CTkLabel(parent, text=text, text_color=MUTED, justify="left",
-                     anchor="w", wraplength=400 - indent,
-                     font=ctk.CTkFont(size=11)
-                     ).pack(fill="x", padx=(indent, 0), pady=(2, 0))
+    def _slider_to_entry(self, value):
+        if self._slider_guard:
+            return
+        self.e_thresh.delete(0, "end")
+        self.e_thresh.insert(0, f"{float(value):.2f}")
 
-    def _section(self, parent, title):
-        ctk.CTkLabel(parent, text=title.upper(), text_color=ACCENT_SOFT,
-                     anchor="w", font=ctk.CTkFont(size=11, weight="bold")
-                     ).pack(fill="x", pady=(18, 4))
+    def _entry_to_slider(self, _e=None):
+        try:
+            v = float(self.e_thresh.get().strip())
+        except ValueError:
+            return
+        self._slider_guard = True
+        try:
+            self.sld_thresh.set(max(0.60, min(0.95, v)))
+        finally:
+            self._slider_guard = False
 
     def open_data(self):
         try:
@@ -1042,113 +1695,282 @@ class GlassMacro(ctk.CTk):
         except Exception as exc:
             self.log(f"could not open the data folder: {exc}")
 
-    # ---- the status card ----
+    # ------------------------------------------------------ live pieces --
     def set_state(self, title, detail="", colour=None):
-        self.lbl_state.configure(text=title, text_color=colour or TEXT)
+        if title != self._state_title:
+            self._state_title = title
+            self._state_since = time.time()
+        self.lbl_state.configure(text=title)
         self.lbl_detail.configure(text=detail)
+        self._dot_colour = colour or MUTED
+        self._paint_dot()
+
+    def _status(self, text, colour):
+        """RUNNING / IDLE / WATCHING. Only the dot shows it now - the old
+        header pill said the same thing as the card, and they could briefly
+        disagree."""
+        self._run_mode = text
+        if text != "RUNNING":
+            self._dot_colour = colour if text == "WATCHING" else MUTED
+        self._paint_dot()
+
+    def _pulsing(self):
+        return (self._run_mode in ("RUNNING", "WATCHING")
+                and self._dot_colour in (GREEN, ACCENT, AMBER))
+
+    def _paint_dot(self):
+        try:
+            self.dotc.itemconfigure(self._core, fill=self._dot_colour)
+            if not self._pulsing():
+                c = self._px(16) / 2
+                self.dotc.coords(self._halo, c, c, c, c)
+        except Exception:
+            pass
+
+    def _animate(self):
+        """One timer for the breathing dot. Only moves existing canvas items,
+        and idles when the window is minimised or nothing is running."""
+        delay = 300
+        try:
+            if self._pulsing() and self.state() != "iconic":
+                period = 2.4 if self._dot_colour == AMBER else 1.6
+                self._pulse_t = (self._pulse_t + 0.06 / period) % 1.0
+                t = self._pulse_t
+                c = self._px(16) / 2
+                rad = self._px(4) + self._px(4) * t
+                self.dotc.coords(self._halo, c - rad, c - rad, c + rad,
+                                 c + rad)
+                self.dotc.itemconfigure(
+                    self._halo,
+                    fill=blend(blend(self._dot_colour, CARD, 0.45), CARD, t))
+                delay = 60
+        except Exception:
+            pass
+        self.after(delay, self._animate)
+
+    def _show_playtime(self, secs, live=False):
+        """The big number. None = never run; live = counting now; otherwise
+        the last run, dimmed, so stopping does not wipe it to zero."""
+        n = self._num
+        if secs is None:
+            self.lbl_play_cap.configure(text="PLAYTIME")
+            for lbl, t in zip(n, ("—", "", "", "")):
+                lbl.configure(text=t)
+            n[0].configure(text_color=MUTED)
+            # a CTkProgressBar at 0 still draws a nub; hide it in the track
+            self.bar_hour.configure(progress_color=HAIRLINE)
+            self.bar_hour.set(0)
+            self.lbl_play_sub.configure(
+                text="Starts counting when you press Start")
+            return
+        s = int(secs)
+        if s >= 3600:
+            parts = (str(s // 3600), "h", f"{s % 3600 // 60:02d}", "m")
+        else:
+            parts = (str(s // 60), "m", f"{s % 60:02d}", "s")
+        colour = TEXT if live else SUBTLE
+        for lbl, t in zip(n, parts):
+            lbl.configure(text=t)
+        n[0].configure(text_color=colour)
+        n[2].configure(text_color=colour)
+        self.lbl_play_cap.configure(text="PLAYTIME" if live else "LAST RUN")
+        for v in (self.val_picks, self.val_joins):
+            v.configure(text_color=colour)
+        if live:
+            self.bar_hour.configure(progress_color=ACCENT)
+            self.bar_hour.set((s % 3600) / 3600.0)
+            left = 60 - (s % 3600) // 60
+            self.lbl_play_sub.configure(
+                text=f"{left}m to {s // 3600 + 1}h")
+        else:
+            self.bar_hour.configure(progress_color=HAIRLINE)
+            self.bar_hour.set(0)
+            end = (self._last_run or {}).get("end", "")
+            self.lbl_play_sub.configure(text=f"ended {end}" if end else "")
 
     def _tick(self):
-        """Keep the Running counter live. Main thread only."""
-        if self.session_start:
-            el = int(time.time() - self.session_start)
-            self.val_time.configure(
-                text=f"{el // 3600}:{el % 3600 // 60:02d}:{el % 60:02d}")
+        """Once a second, main thread: playtime, 'since', setup countdown."""
+        try:
+            now = time.time()
+            if self.running and self.session_start:
+                self._run_t0 = self.session_start
+                self._was_running = True
+                self._show_playtime(now - self.session_start, live=True)
+            elif self._was_running:
+                # stopped - by F8, by Stop, or the worker ending on an error
+                self._was_running = False
+                self._last_run = {"secs": now - (self._run_t0 or now),
+                                  "end": time.strftime("%H:%M")}
+                self._show_playtime(self._last_run["secs"], live=False)
+            if self.running and self._state_since:
+                self.lbl_since.configure(text="since " + time.strftime(
+                    "%H:%M", time.localtime(self._state_since)))
+            else:
+                self.lbl_since.configure(text="")
+            if self._setup_active and self._guide["t0"]:
+                # no countdown: the setup worker only checks its time limit
+                # when a key arrives, so a clock reaching 0:00 would be a lie
+                self._guide_status("Esc cancels · take your time",
+                                   SUBTLE)
+        except Exception:
+            pass
         self.after(1000, self._tick)
 
     # A friendly reading of the log. Every path through the macro already logs
-    # what it is doing, so the status card follows the log instead of each
-    # worker being re-plumbed to drive it - the tested behaviour stays as is.
-    # First match wins, so the more specific phrases come first.
+    # what it is doing, so the card and the feed follow the log instead of the
+    # worker being re-plumbed - the tested behaviour stays exactly as it is.
+    # First match wins, so the more specific phrases come first. "{n}" in a
+    # detail is filled with the first number in the log line.
     STATUS_RULES = (
-        ("just playing", "In a match",
-         "Jumping and firing until the next loadout.", "GREEN", None),
-        ("choosing loadout", "Picking loadout",
-         "Grenade Launcher first, then Random.", "ACCENT", None),
+        ("stopped on an error", "Stopped on an error",
+         "The full log says what happened.", "RED", None),
+        ("just playing", "In a match", "Picked up where you were.",
+         "GREEN", None),
+        ("choosing loadout", "Picking a loadout",
+         "Grenade Launcher, then Random.", "ACCENT", None),
         ("done, back to jumping", "In a match",
-         "Jumping and firing until the next loadout.", "GREEN", "picks"),
+         "Jumping and firing until the next pick.", "GREEN", "picks"),
         ("in the hub - joining", "Joining Free For All",
-         "Walking the lobby menu into a match.", "ACCENT", None),
+         "Walking the menu from the hub.", "ACCENT", None),
         ("match started - stopping the join", "In a match",
-         "A round began mid-join, so it stopped clicking the menu.",
+         "A round started mid-join, so it stopped clicking the menu.",
          "GREEN", None),
         ("  in a match", "In a match",
-         "Joined. Waiting for the weapon picker.", "GREEN", "joins"),
-        ("PAUSED", "Paused",
-         "Click into Rivals to carry on - it only acts while the game is in "
-         "front.", "AMBER", None),
-        ("back in front", "Resuming", "", "ACCENT", None),
+         "Joined · waiting for the weapon picker.", "GREEN", "joins"),
+        ("PAUSED", "Paused", "Click into Rivals and it carries on.",
+         "AMBER", None),
+        ("back in front", "Back in Rivals", "Carrying on.", "ACCENT", None),
         ("connection dialog", "Reconnecting",
-         "Clicking through the connection dialog.", "AMBER", None),
+         "Got disconnected · clicking Reconnect.", "AMBER", None),
         ("restarting Roblox", "Restarting Roblox",
-         "Retry never reconnects, so this is a fresh start.", "AMBER", None),
+         "Reconnect didn't work, so it's starting fresh.", "AMBER", None),
         ("Join prompt showing", "Between rounds",
-         "Waiting for the next round to start on its own.", "SUBTLE", None),
+         "Waiting for the next round to start.", "ACCENT", None),
         ("still spectating", "Joining the match",
-         "The Join prompt stayed up, so it clicked it.", "ACCENT", None),
-        ("quiet for", "In a match",
-         "Nothing's needed it for a while - still alive, or a quiet server. "
-         "Both mean more time in-game.", "GREEN", None),
-        ("could not get into a match", "Couldn't join",
-         "Tried three times. It keeps watching and will try again.",
-         "RED", None),
+         "Was stuck spectating · pressed Join.", "ACCENT", None),
+        ("quiet for", "All quiet",
+         "{n} min with nothing to do. The best case for playtime.",
+         "GREEN", None),
+        ("could not get into a match", "Couldn't get in",
+         "Tried three times · it'll keep trying.", "RED", None),
         ("started - F8 stops it", "Starting", "Checking where you are.",
          "ACCENT", None),
-        ("hover RANDOM", "Setting up  -  1 of 3",
-         "Open the weapon picker in Rivals. Hover the Random tile and press "
-         "F8. Don't click.", "ACCENT", None),
-        ("hover GRENADE LAUNCHER", "Setting up  -  2 of 3",
-         "Hover the Grenade Launcher's name and press F8.", "ACCENT", None),
-        ("hover the FIRST loadout", "Setting up  -  3 of 3",
-         "Hover the first loadout slot along the top and press F8.",
-         "ACCENT", None),
+        ("pressing F11 for fullscreen", "Going fullscreen",
+         "Roblox was in a window · pressed F11.", "ACCENT", None),
+        ("  fullscreen now", "Fullscreen", "Carrying on.", "GREEN", None),
+        ("couldn't make Roblox fullscreen", "Roblox isn't fullscreen",
+         "Press F11 in Roblox · clicks can miss in a window.",
+         "AMBER", None),
+        ("heads up: this screen is", "Made for 1920×1080",
+         "This screen is different, so clicks may land in the wrong place.",
+         "AMBER", None),
+        ("calibrate first", "Set up your weapons first",
+         "It only takes three hovers.", "AMBER", None),
+        ("recalibrate - it now needs", "Redo setup",
+         "It needs your first loadout slot too now.", "RED", None),
+        ("calibration looks like the same", "Redo setup",
+         "Random, then the Grenade Launcher, then the loadout slot.",
+         "RED", None),
         ("calibration saved", "Weapons set up",
-         "Press Start, or F8 inside Rivals.", "GREEN", None),
-        ("calibration cancelled", "Setup cancelled", "", "SUBTLE", None),
-        ("from the LOBBY", "Teaching the way back  -  1 of 3",
-         "In the lobby: hover Play, press F8, then click it yourself.",
+         "Open Rivals and press F8, or hit Start.", "GREEN", None),
+        ("from the LOBBY", "Teaching the way back · 1 of 3",
+         "In the hub: hover Play, press F8, then click it yourself.",
          "ACCENT", None),
-        ("now hover FREE FOR ALL", "Teaching the way back  -  2 of 3",
+        ("now hover FREE FOR ALL", "Teaching the way back · 2 of 3",
          "Scroll to Free For All, hover it, press F8, then click it.",
          "ACCENT", None),
-        ("now hover PLAY on", "Teaching the way back  -  3 of 3",
+        ("now hover PLAY on", "Teaching the way back · 3 of 3",
          "Hover Play on the Free For All screen and press F8.",
          "ACCENT", None),
         ("saved the way back", "Way back saved",
-         "Press Start, or F8 inside Rivals.", "GREEN", None),
-        ("pressing F11 for fullscreen", "Going fullscreen",
-         "Roblox was in a window, so it pressed F11.", "ACCENT", None),
-        ("  fullscreen now", "Fullscreen", "Carrying on.", "GREEN", None),
-        ("couldn't make Roblox fullscreen", "Roblox isn't fullscreen",
-         "Press F11 in Roblox - clicks can miss in a window.", "AMBER", None),
-        ("heads up: this screen is", "Made for 1080p screens",
-         "This screen isn't 1920x1080, so clicks may land in the wrong "
-         "place.", "AMBER", None),
+         "Open Rivals and press F8, or hit Start.", "GREEN", None),
         ("timed out - nothing saved", "Nothing saved",
-         "Took too long between presses. Try again whenever.", "SUBTLE",
-         None),
-        ("calibrate first", "Set up your weapons first",
-         "Press Set up below - it only takes three hovers.", "AMBER", None),
-        ("recalibrate - it now needs", "Redo the weapon setup",
-         "It needs the first loadout slot too now.", "RED", None),
-        ("calibration looks like the same", "Redo the weapon setup",
-         "Random first, then Grenade Launcher, then the loadout slot.",
-         "RED", None),
-        ("calibration failed", "Setup failed",
-         "Nothing was changed. The Activity tab says why.", "RED", None),
+         "Took too long between presses.", "MUTED", None),
+        ("stop the macro first", "Stop it first",
+         "Press Stop, then try that again.", "AMBER", None),
     )
+
+    # The activity feed: (needle, key, glyph, colour, title, sub). A sub may
+    # use {n} like above. Lines that match nothing stay out of the feed - they
+    # are still in Full log and log.txt.
+    FEED_RULES = (
+        ("stopped on an error", "err", "×", "RED",
+         "Stopped on an error", "see Full log"),
+        ("just playing", "resume", "▶", "SUBTLE", "Already in a match",
+         "picking up from here"),
+        ("in the hub - joining", "hub", "➜", "ACCENT",
+         "Joining Free For All", "from the hub"),
+        ("match started - stopping the join", "back", "➜", "ACCENT",
+         "Back in Free For All", "a round started mid-join"),
+        ("  in a match", "back", "➜", "ACCENT", "Back in Free For All",
+         ""),
+        ("done, back to jumping", "pick", "◆", "ACCENT",
+         "Picked a loadout", ""),
+        ("NOT the launcher there", "miss", "!", "AMBER", "Skipped a pick",
+         "couldn't see the Grenade Launcher"),
+        ("quiet for", "quiet", "●", "GREEN", "All quiet",
+         "{n} min with nothing to do"),
+        ("connection dialog", "disc", "!", "AMBER", "Disconnected",
+         "clicked Reconnect"),
+        ("restarting Roblox", "restart", "!", "AMBER", "Restarting Roblox",
+         "Reconnect didn't work"),
+        ("could not get into a match", "noin", "×", "RED",
+         "Couldn't get into a match", "will keep trying"),
+        ("still spectating", "spec", "➜", "ACCENT",
+         "Joined from spectate", ""),
+        ("PAUSED", "pause", "❚❚", "AMBER", "Paused",
+         "Rivals isn't in front"),
+        ("back in front", "resume", "▶", "SUBTLE", "Resumed", ""),
+        ("pressing F11 for fullscreen", "fs", "⤢", "ACCENT",
+         "Back to fullscreen", "pressed F11"),
+        ("couldn't make Roblox fullscreen", "nofs", "!", "AMBER",
+         "Roblox isn't fullscreen", "press F11 in Roblox"),
+        ("heads up: this screen is", "screen", "!", "AMBER",
+         "Screen isn't 1920×1080", "clicks may miss"),
+        ("NOTE: those two points are almost", "needsetup", "!", "AMBER",
+         "Setup needs redoing", "the same spot was hovered twice"),
+        ("calibration saved", "setup", "✓", "GREEN", "Weapons set up",
+         ""),
+        ("saved the way back", "way", "✓", "GREEN", "Way back saved",
+         ""),
+        ("calibrate first", "needsetup", "!", "AMBER", "Setup needed",
+         "three hovers in the weapon picker"),
+        ("recalibrate - it now needs", "needsetup", "!", "AMBER",
+         "Setup needed", "redo it with the loadout slot"),
+        ("calibration looks like the same", "needsetup", "!", "AMBER",
+         "Setup needed", "one tile was hovered twice"),
+        ("started - F8 stops it", "start", "▶", "SUBTLE", "Started", ""),
+    )
+
+    @staticmethod
+    def _fill_n(template, text):
+        if "{n}" not in template:
+            return template
+        import re
+        m = re.search(r"\d+", text)
+        return template.replace("{n}", m.group(0) if m else "a few")
 
     def _status_from_log(self, msg):
         text = str(msg)
+        if text.startswith("started - F8 stops it"):
+            # toggle_run sets session_start just before logging this. Taking
+            # it here, not on the next 1s tick, keeps a run stopped within a
+            # second from being reported with the PREVIOUS run's length.
+            self._run_t0 = self.session_start or time.time()
+            self._was_running = True
         if text == "stopped":
-            self.set_state("Stopped", "Press Start, or F8 inside Rivals.",
-                           SUBTLE)
+            secs = time.time() - self._run_t0 if self._run_t0 else 0
+            self.set_state("Stopped", f"Ran {span(secs)} · "
+                           f"{self.n_picks} loadouts · "
+                           f"{self.n_joins} rejoins", MUTED)
             return
         if text == "cancelled":
-            self.set_state("Cancelled", "Nothing was changed.", SUBTLE)
+            self.set_state("Cancelled", "Nothing changed.", MUTED)
             return
         for needle, title, detail, colour, counter in self.STATUS_RULES:
             if needle in text:
-                self.set_state(title, detail, globals()[colour])
+                self.set_state(title, self._fill_n(detail, text),
+                               globals()[colour])
                 if counter == "picks":
                     self.n_picks += 1
                     self.val_picks.configure(text=str(self.n_picks))
@@ -1156,6 +1978,158 @@ class GlassMacro(ctk.CTk):
                     self.n_joins += 1
                     self.val_joins.configure(text=str(self.n_joins))
                 return
+
+    def _feed_from_log(self, msg):
+        text = str(msg)
+        if text == "stopped":
+            secs = time.time() - self._run_t0 if self._run_t0 else 0
+            self._feed_add("stop", "■", "SUBTLE", "Stopped",
+                           f"after {span(secs)}")
+            return
+        for needle, key, glyph, colour, title, sub in self.FEED_RULES:
+            if needle in text:
+                self._feed_add(key, glyph, colour, title,
+                               self._fill_n(sub, text))
+                return
+
+    def _feed_add(self, key, glyph, colour, title, sub):
+        """Newest on top. The same event twice in a row becomes one row with a
+        count ('Picked a loadout  x6'), so hours of play read as a few lines."""
+        tb = self.feed
+        count = 1
+        if self._feed_top and self._feed_top[0] == key and key not in (
+                "start", "stop"):
+            count = self._feed_top[1] + 1
+            tb.configure(state="normal")
+            tb._textbox.delete("1.0", "2.0")
+            tb.configure(state="disabled")
+            self._feed_rows -= 1
+        self._feed_top = (key, count)
+        t = tb._textbox
+        tb.configure(state="normal")
+        at = "1.0"
+        parts = [(time.strftime("%H:%M") + "\t", "ts"),
+                 (glyph + "\t", "g_" + colour), (title, "title")]
+        if sub:
+            parts.append(("   " + sub, "sub"))
+        if count > 1:
+            parts.append((f"   ×{count}", "chip"))
+        parts.append(("\n", "title"))
+        for chunk, tag in reversed(parts):
+            t.insert(at, chunk, tag)
+        self._feed_rows += 1
+        if self._feed_rows > 300:
+            t.delete("301.0", "end")
+            self._feed_rows = 300
+        tb.configure(state="disabled")
+        t.see("1.0")
+        if self._feed_rows == 1:
+            self.empty.place_forget()
+
+    # ---- the setup guide follows the setup's own log lines ----
+    def _guide_from_log(self, msg):
+        text = str(msg)
+        g = self._guide
+        if text.startswith("hover RANDOM"):
+            self._setup_active = True
+            g.update(step=1, done=set(), t0=time.time(), bad=0)
+        elif text.startswith("  got RANDOM"):
+            g["done"].add(1)
+        elif text.startswith("hover GRENADE LAUNCHER"):
+            g["step"] = 2
+        elif text.startswith("  got GRENADE LAUNCHER"):
+            g["done"].add(2)
+        elif text.startswith("hover the FIRST loadout"):
+            g["step"] = 3
+        elif text.startswith("  got the FIRST loadout"):
+            g["done"].add(3)
+        elif text.startswith("NOTE: those two points are almost"):
+            g.update(step=2, done={1}, t0=0.0, bad=2)
+            self._guide_status("That was the same spot as Random · redo "
+                               "it, and hover the Grenade Launcher.", RED)
+        elif text == "calibration saved":
+            g.update(step=0, done={1, 2, 3}, t0=0.0)
+            self._setup_active = False
+        elif self._setup_active and text in ("calibration cancelled",
+                                             "timed out - nothing saved"):
+            g.update(step=0, done=set(), t0=0.0)
+            self._setup_active = False
+            self._guide_status(
+                "Cancelled · nothing changed." if "cancel" in text else
+                "Took too long between presses · nothing saved. Try "
+                "again whenever.", SUBTLE)
+        elif self._setup_active and text.startswith("calibration failed"):
+            g.update(step=0, done=set(), t0=0.0)
+            self._setup_active = False
+            self._guide_status("Something went wrong · nothing saved. "
+                               "Full log has the details.", RED)
+        else:
+            return
+        self._paint_guide()
+        self._refresh_layout()
+
+    def _draw_badge(self, cv, text, fill, colour, bg):
+        cv.delete("all")
+        cv.configure(bg=bg)
+        d = self._px(26)
+        cv.create_oval(1, 1, d - 1, d - 1, fill=fill, outline="")
+        cv.create_text(d / 2, d / 2, text=text, fill=colour,
+                       font=self._tkfont(12, semi=True,
+                                         family=self._fam_sym
+                                         if text == "✓" else None))
+
+    def _guide_status(self, text, colour):
+        self.lbl_guide.configure(text=text, text_color=colour)
+
+    def _paint_guide(self):
+        g = self._guide
+        for i, seg in enumerate(self._segs, start=1):
+            seg.configure(fg_color=GREEN if i in g["done"] else
+                          ACCENT if i == g["step"] else LINE)
+        # not started yet: still point at step 1, so the picture shows what
+        # to hover first
+        current = g["step"] or (1 if not g["done"] else 0)
+        for i, row in enumerate(self._step_rows, start=1):
+            is_cur = i == current and i not in g["done"]
+            bad = g.get("bad") == i
+            border = RED if bad else (ACCENT if is_cur else HAIRLINE)
+            fill = CARD_HI if is_cur else "transparent"
+            row["row"].configure(border_color=border, fg_color=fill)
+            bg = CARD_HI if is_cur else CARD
+            if i in g["done"]:
+                self._draw_badge(row["badge"], "✓", GREEN_DIM, GREEN, bg)
+            else:
+                self._draw_badge(row["badge"], str(i),
+                                 ACCENT if is_cur else CARD_HI,
+                                 INK if is_cur else SUBTLE, bg)
+            if is_cur:
+                self._draw_picker(row["pic"], i - 1, CARD_HI)
+                row["pic"].pack(side="right", padx=(8, 0))
+            else:
+                row["pic"].pack_forget()
+        if self._setup_active:
+            self.btn_cal.configure(state="disabled",
+                                   text="Hover it and press F8",
+                                   fg_color=CARD_HI)
+        else:
+            self.btn_cal.configure(state="normal",
+                                   text="I'm on the weapon picker · "
+                                        "start setup", fg_color=ACCENT)
+
+    def _refresh_layout(self):
+        """The guide takes the status card's place until setup is done."""
+        want = self._setup_active or not self._ready()
+        if want == self._guide_visible:
+            return
+        self._guide_visible = want
+        if want:
+            self.hero.pack_forget()
+            self.weap.pack_forget()
+            self.guide.pack(fill="x", before=self.tabbar)
+        else:
+            self.guide.pack_forget()
+            self.hero.pack(fill="x", before=self.tabbar)
+            self.weap.pack(fill="x", pady=(12, 0), before=self.tabbar)
 
     def log(self, msg):
         stamp = time.strftime("%H:%M:%S")
@@ -1175,18 +2149,17 @@ class GlassMacro(ctk.CTk):
             lines = int(self.txt.index("end-1c").split(".")[0])
             if lines > 2000:
                 self.txt.delete("1.0", f"{lines - 1500}.0")
-            self.txt.see("end")
+            if self._full_log:
+                self.txt.see("end")
             self.txt.configure(state="disabled")
         except Exception:
             pass
-        try:
-            self._status_from_log(msg)
-        except Exception:
-            pass                      # the card is cosmetic; never let it break
-
-    def _status(self, text, colour):
-        self.pill.configure(text=text, text_color=colour)
-        self.dot.configure(text_color=colour)
+        for fn in (self._status_from_log, self._feed_from_log,
+                   self._guide_from_log):
+            try:
+                fn(msg)
+            except Exception:
+                pass                  # the UI is cosmetic; never let it break
 
     def _saved_randoms(self):
         if self.cal and "randoms" in self.cal:
@@ -1244,57 +2217,48 @@ class GlassMacro(ctk.CTk):
 
     def _paint_run(self):
         """One place that decides how the big button looks."""
+        b = self.btn_run
         if self.running:
-            self.btn_run.configure(text="Stop    F8", fg_color="#2a1418",
-                                   hover_color="#3a1a1f", text_color="#fca5a5",
-                                   border_width=1, border_color="#7f2d2d")
+            # neutral, not a red slab - a 3-hour run should not look like an
+            # error the whole time
+            b.configure(text="Stop", glyph="■", fg_color=CARD_HI,
+                        hover_color=RED_DIM, text_color=TEXT, glyph_color=RED,
+                        border_color=LINE, key_fg=PANEL,
+                        key_border=KEYCAP_LINE, key_text=SUBTLE)
         elif self._ready():
-            self.btn_run.configure(text="Start    F8", fg_color=ACCENT,
-                                   hover_color=ACCENT_SOFT, text_color=INK,
-                                   border_width=0)
+            b.configure(text="Start", glyph="▶", fg_color=ACCENT,
+                        hover_color=ACCENT_SOFT, text_color=INK,
+                        glyph_color=INK, border_color=ACCENT,
+                        key_fg="#4ab8ec", key_border="#2b93d1", key_text=INK)
         else:
-            # nothing to start yet - so Set up, not Start, is the loud button
-            self.btn_run.configure(text="Start    F8", fg_color=CARD_HI,
-                                   hover_color=LINE, text_color=MUTED,
-                                   border_width=0)
-
-    def _paint_cal(self, text, loud):
-        if loud:
-            self.btn_cal.configure(text=text, fg_color=ACCENT,
-                                   hover_color=ACCENT_SOFT, text_color=INK,
-                                   border_width=0)
-        else:
-            self.btn_cal.configure(text=text, fg_color="transparent",
-                                   hover_color=CARD_HI, text_color=TEXT,
-                                   border_width=1)
+            b.configure(text="Set up weapons first", glyph="!",
+                        fg_color=CARD_HI, hover_color=LINE, text_color=MUTED,
+                        glyph_color=AMBER, border_color=LINE, key_fg=PANEL,
+                        key_border=KEYCAP_LINE, key_text=MUTED)
 
     def _show_cal(self):
+        if not self.calibrating:
+            self._setup_active = False       # the setup worker has finished
+        if self._ready():
+            made = (self.cal or {}).get("made", "")
+            try:
+                when = time.strftime("%b %d", time.strptime(made[:10],
+                                                            "%Y-%m-%d"))
+                when = when.replace(" 0", " ")
+            except Exception:
+                when = ""
+            self.lbl_weap.configure(text="Weapons ready")
+            self.lbl_cal.configure(
+                text=f"Grenade Launcher + {self._saved_randoms()} Random"
+                     + (f" · set up {when}" if when else ""))
+            self.weap_tile.configure(text="✓", fg_color=GREEN_DIM,
+                                     text_color=GREEN)
         self._paint_run()
-        if not self.cal:
-            self.lbl_cal.configure(
-                text="Not set up yet - three quick hovers, one time only.",
-                text_color=AMBER)
-            self._paint_cal("Set up", loud=True)
-            if not self.running:
-                self.set_state("Set up your weapons",
-                               "Open the weapon picker in Rivals, then press "
-                               "Set up below.", AMBER)
-            return
-        if not self._ready():
-            self.lbl_cal.configure(
-                text="Needs redoing - hover Random, then Grenade Launcher, "
-                     "then the first loadout slot.",
-                text_color=RED)
-            self._paint_cal("Redo", loud=True)
-            if not self.running:
-                self.set_state("Redo the weapon setup",
-                               "The saved one can't be used as it is.", RED)
-            return
-        self.lbl_cal.configure(text="Calibrated - Grenade Launcher found.",
-                               text_color=GREEN)
-        self._paint_cal("Recalibrate", loud=False)
-        if not self.running:
-            self.set_state("Ready", "Press Start, or F8 inside Rivals.")
+        self._paint_guide()
+        self._refresh_layout()
+        if not self.running and self._ready() and not self._setup_active:
+            self.set_state("Ready", "Open Rivals and press F8, or hit Start.",
+                           MUTED)
 
     # ----------------------------------------------------------- actions --
     def _hotkey(self):
@@ -1447,7 +2411,7 @@ class GlassMacro(ctk.CTk):
         taught = bool((self.cal or {}).get("ffa_path"))
         self.lbl_ffa.configure(
             text="Taught on this PC" if taught else "Built in",
-            text_color=GREEN)
+            text_color=TEXT)
 
     # ---- fullscreen. Worker thread only, like everything that sends input.
     def _fresh_fs(self):
@@ -1606,7 +2570,7 @@ class GlassMacro(ctk.CTk):
     def toggle_watch(self):
         if self.watching:
             self.watching = False
-            self.btn_watch.configure(text="Test")
+            self.btn_watch.configure(text="Live test")
             self._status("IDLE", SUBTLE)
             return
         if not self.cal:
@@ -1616,7 +2580,7 @@ class GlassMacro(ctk.CTk):
             self.log("stop the macro first")
             return
         self.watching = True
-        self.btn_watch.configure(text="Stop")
+        self.btn_watch.configure(text="Stop test")
         self._status("WATCHING", AMBER)
         threading.Thread(target=self._watch_worker, daemon=True).start()
 
@@ -1642,7 +2606,7 @@ class GlassMacro(ctk.CTk):
             self._ui(lambda t=text: self.lbl_score.configure(text=t))
             time.sleep(0.5)
         self.watching = False
-        self._ui(lambda: self.btn_watch.configure(text="Test"))
+        self._ui(lambda: self.btn_watch.configure(text="Live test"))
 
     def toggle_run(self):
         if self.running:

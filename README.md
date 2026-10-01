@@ -40,7 +40,7 @@ It got me the wrap. I've left it running for 10+ hours straight, so now I'm shar
 
 ## Installing it
 
-1. Go to **[Releases](../../releases/latest)** and download `GlassMacro-v1.2.0.zip`.
+1. Go to **[Releases](../../releases/latest)** and download `GlassMacro-v1.0.3.zip`.
    Only get it from here, not from random re-uploads.
 2. Right-click the zip → **Extract All**. Don't run it from inside the zip.
 3. Open the folder and run **`GlassMacro.exe`**.
@@ -57,26 +57,32 @@ delete the GlassMacro folder and that one, and that's everything.
 The macro just needs to learn where your weapons are. Everything else is already set up.
 
 1. In Rivals, open the **weapon picker**.
-2. In GlassMacro, press **Set up**.
+2. In GlassMacro, press **I'm on the weapon picker · start setup**. The app walks you
+   through it one step at a time, with a little picture of what to hover.
 3. Hover over each of these and press **F8**. Don't click, just hover.
    1. the **Random** tile
-   2. the **Grenade Launcher's name**. Hover the label, not the picture.
+   2. the **Grenade Launcher** button itself
    3. your **first loadout slot** along the top
 
 Messed up? Press **Esc** to cancel and start again. If an event ever adds or removes
-weapons and the grid moves, hit **Recalibrate** and do the same three hovers.
+weapons and the grid moves, hit **Redo setup** and do the same three hovers.
 
 ## Using it
 
 - Press **Start**, or **F8** while you're in Rivals. **F8** again stops it.
 - You can start it from anywhere: the hub, mid-match or spectating. It figures out where
   you are.
-- The status card shows what it's doing right now, how long it's been running, and how many
-  loadouts it's picked and how many times it's rejoined.
+- The top card shows what it's doing right now. The dot pulses while it's working: green
+  while it's playing, amber when it's paused or reconnecting.
+- **Playtime** is the big number. It also shows how many loadouts it's picked and how many
+  times it's rejoined, and it keeps your last run on screen after you stop.
+- **Activity** lists what happened in plain English, newest first. **Full log** has every
+  detail, which helps with bug reports.
 
 In **Settings** you can:
-- turn off auto-fullscreen, auto-reconnect or the saved pictures
-- test the detection
+- turn off **Keep Roblox fullscreen**, **Reconnect automatically** or **Save screenshots**
+- run a **Live test** of the detection. Leave **Match sensitivity** at 0.82 unless picks
+  get skipped.
 - open the data folder, which has the log and the pictures it saves
 
 ## If Windows or your antivirus warns you
