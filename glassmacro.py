@@ -34,7 +34,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import keyboard
 
-APP_NAME, APP_VER = "GlassMacro", "1.0.6"
+APP_NAME, APP_VER = "GlassMacro", "1.0.7"
 
 # Calibration lives in AppData, never beside the exe: a PyInstaller onefile
 # build unpacks to a temp folder that is deleted on exit, so anything saved
@@ -847,7 +847,11 @@ def draw_gem(canvas, x, y, size, dim=False):
 # can be switched off in Settings. Everything else in the app stays offline.
 REPO = "Ariliux/GlassMacro"
 RELEASES_URL = f"https://github.com/{REPO}/releases/latest"
-LATEST_API = f"https://api.github.com/repos/{REPO}/releases/latest"
+# By the repo's permanent number, not its name: if the account were ever
+# renamed or deleted, someone could register "Ariliux" again and publish a
+# fake GlassMacro - the number can never be re-registered.
+REPO_ID = 1398827524
+LATEST_API = f"https://api.github.com/repositories/{REPO_ID}/releases/latest"
 UPDATE_EVERY = 12 * 3600       # runs last for days, so check again now and then
 SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 
@@ -860,8 +864,13 @@ def version_tuple(v):
     return tuple(int(n) for n in re.findall(r"\d+", str(v))[:3])
 
 
-def latest_release(timeout=6.0):
-    """(version, page url) of the newest published release, or None.
+ASSET_PREFIX = f"https://github.com/{REPO}/releases/download/"
+UPDATE_DIR = os.path.join(DATA_DIR, "update")
+
+
+def release_info(timeout=6.0):
+    """The newest published release, or None. A dict with:
+    version, page (release page), zip (download url or None), sha256.
 
     Never raises - no network, a GitHub outage or a rate limit all just mean
     "no news", and the app carries on exactly as before.
@@ -879,9 +888,237 @@ def latest_release(timeout=6.0):
         url = str(data.get("html_url") or "")
         if not url.startswith(f"https://github.com/{REPO}/"):
             url = RELEASES_URL           # only ever open our own release page
-        return tag.lstrip("vV"), url
+        info = {"version": tag.lstrip("vV"), "page": url, "zip": None,
+                "sha256": None}
+        # the app zip, but only from THIS repo's releases and only with the
+        # fingerprint GitHub publishes for it - no fingerprint, no auto-update
+        for asset in data.get("assets") or []:
+            name = str(asset.get("name") or "")
+            link = str(asset.get("browser_download_url") or "")
+            digest = str(asset.get("digest") or "")
+            if (re.fullmatch(r"GlassMacro-v[\d.]+\.zip", name)
+                    and link.startswith(ASSET_PREFIX)
+                    and re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest)):
+                info["zip"], info["sha256"] = link, digest[7:].lower()
+                break
+        return info
     except Exception:
         return None
+
+
+def latest_release(timeout=6.0):
+    """(version, page url) of the newest published release, or None."""
+    info = release_info(timeout)
+    return (info["version"], info["page"]) if info else None
+
+
+def download_update(url, sha256, dest, progress=None, timeout=30):
+    """Download url to dest, fingerprinting it on the way. True only if the
+    SHA-256 matches - anything else leaves no file behind."""
+    import hashlib
+    import urllib.request
+    tmp = dest + ".part"
+    h = hashlib.sha256()
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": f"{APP_NAME}/{APP_VER}"})
+        with urllib.request.urlopen(req, timeout=timeout) as r, \
+                open(tmp, "wb") as out:
+            total = int(r.headers.get("Content-Length") or 0)
+            done = 0
+            while True:
+                chunk = r.read(256 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+                h.update(chunk)
+                done += len(chunk)
+                if progress:
+                    progress(done, total)
+        if h.hexdigest() != str(sha256).lower():
+            raise ValueError("fingerprint mismatch")
+        os.replace(tmp, dest)
+        return True
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def stage_update(zip_path, stage_dir):
+    """Unpack the new version into stage_dir. Path of its GlassMacro.exe, or
+    None if the zip is not a GlassMacro folder build."""
+    import zipfile
+    shutil.rmtree(stage_dir, ignore_errors=True)
+    os.makedirs(stage_dir, exist_ok=True)
+    root = os.path.realpath(stage_dir)
+    with zipfile.ZipFile(zip_path) as z:
+        for name in z.namelist():           # nothing may land outside
+            dest = os.path.realpath(os.path.join(root, name))
+            if not dest.startswith(root + os.sep):
+                return None
+        z.extractall(root)
+    for folder in (os.path.join(root, "GlassMacro"), root):
+        exe = os.path.join(folder, "GlassMacro.exe")
+        if os.path.isfile(exe) and os.path.isdir(os.path.join(folder,
+                                                              "_internal")):
+            # every file and its size, so the swap can refuse to install a
+            # staging copy that lost files after unpacking
+            sizes = {}
+            for base, _dirs, files in os.walk(folder):
+                for f in files:
+                    full = os.path.join(base, f)
+                    sizes[os.path.relpath(full, folder)] = os.path.getsize(full)
+            with open(os.path.join(root, "manifest.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(sizes, fh)
+            return exe
+    return None
+
+
+def _wait_for_exit(pid, seconds=30):
+    k32 = ctypes.windll.kernel32
+    handle = k32.OpenProcess(0x00100000, False, int(pid))   # SYNCHRONIZE
+    if handle:
+        k32.WaitForSingleObject(handle, int(seconds * 1000))
+        k32.CloseHandle(handle)
+
+
+def swap_in_update(src_dir, dst_dir, manifest=None, tries=60):
+    """Put the new GlassMacro.exe and _internal from src_dir into dst_dir.
+
+    The slow part - copying 160 MB - goes into _internal.new and
+    GlassMacro.exe.new NEXT TO the install, which stays complete and
+    runnable the whole time. Only once the old exe is free do three quick
+    renames switch over, and if any of them fails they are undone. A first
+    version moved the old files aside before copying, and anything that
+    went wrong mid-copy (someone reopening GlassMacro, antivirus holding a
+    file) could leave an install that no longer started.
+
+    True when switched; False when nothing changed. Nothing else in dst_dir
+    is ever touched.
+    """
+    internal = os.path.join(dst_dir, "_internal")
+    new_int, old_int = internal + ".new", internal + ".old"
+    exe = os.path.join(dst_dir, "GlassMacro.exe")
+    new_exe = exe + ".new"
+
+    def drop_new():
+        shutil.rmtree(new_int, ignore_errors=True)
+        try:
+            os.remove(new_exe)
+        except OSError:
+            pass
+
+    for leftover in (new_int, old_int):
+        shutil.rmtree(leftover, ignore_errors=True)
+    # 1. copy, and check the copy against the list made at unpacking
+    try:
+        shutil.copytree(os.path.join(src_dir, "_internal"), new_int)
+        shutil.copy2(os.path.join(src_dir, "GlassMacro.exe"), new_exe)
+        for rel, size in (manifest or {}).items():
+            here = (new_exe if rel == "GlassMacro.exe" else
+                    os.path.join(dst_dir, rel.replace("_internal",
+                                                      "_internal.new", 1)))
+            if not os.path.isfile(here) or os.path.getsize(here) != size:
+                raise RuntimeError(f"the new files are incomplete ({rel})")
+    except Exception:
+        drop_new()
+        raise
+    # 2. wait until the old exe is free (a onefile launcher lingers a moment)
+    for _ in range(tries):
+        try:
+            if os.path.exists(exe):
+                with open(exe, "r+b"):
+                    pass
+            break
+        except OSError:
+            time.sleep(0.5)
+    else:
+        drop_new()
+        return False
+    # 3. switch with renames; undo them if any fails
+    had_old = os.path.isdir(internal)
+    try:
+        if had_old:
+            os.rename(internal, old_int)     # fails if anything runs from it
+    except OSError:
+        drop_new()
+        return False
+    moved_in = False
+    try:
+        os.rename(new_int, internal)
+        moved_in = True
+        os.replace(new_exe, exe)
+    except Exception:
+        if moved_in:
+            os.rename(internal, new_int)
+        if had_old:
+            os.rename(old_int, internal)
+        drop_new()
+        raise
+    shutil.rmtree(old_int, ignore_errors=True)
+    return True
+
+
+def finish_update(dst_dir, old_pid, old_version):
+    """Runs in the NEW version, started from the staging folder with
+    --finish-update: wait for the old app to close, swap the files, start
+    the updated app. No window of its own."""
+    def note(line):
+        try:
+            with io.open(LOG_PATH, "a", encoding="utf-8") as fh:
+                fh.write(time.strftime("%Y-%m-%d %H:%M:%S") + "  " + line
+                         + chr(10))
+        except Exception:
+            pass
+    _wait_for_exit(old_pid)
+    src_dir = os.path.dirname(os.path.abspath(sys.executable))
+    manifest = None
+    for folder in (os.path.dirname(src_dir), src_dir):
+        try:
+            with open(os.path.join(folder, "manifest.json"),
+                      encoding="utf-8") as fh:
+                manifest = json.load(fh)
+            break
+        except (OSError, ValueError):
+            pass
+    if manifest is None:
+        note("update failed: the list of new files is missing")
+        ok = False
+    else:
+        try:
+            ok = swap_in_update(src_dir, dst_dir, manifest)
+            if not ok:
+                note("update skipped: GlassMacro was still open - nothing "
+                     "changed")
+        except Exception as exc:
+            note(f"update failed while copying: {exc} - nothing changed")
+            ok = False
+    if ok:
+        try:
+            os.makedirs(UPDATE_DIR, exist_ok=True)
+            with open(os.path.join(UPDATE_DIR, "updated.txt"), "w",
+                      encoding="utf-8") as fh:
+                fh.write(old_version)
+        except Exception:
+            pass
+        note(f"update installed: {old_version} -> {APP_VER}")
+    exe = os.path.join(dst_dir, "GlassMacro.exe")
+    if not ok:
+        # if the old copy is open again (someone double-clicked it), leave it
+        # be rather than starting a second one
+        try:
+            with open(exe, "r+b"):
+                pass
+        except OSError:
+            return
+    try:
+        os.startfile(exe)
+    except Exception as exc:
+        note(f"could not reopen GlassMacro: {exc}")
 
 
 def load_settings():
@@ -1014,6 +1251,66 @@ def play_foreground_sound():
         pass
 
 
+_TDCALLBACK = ctypes.WINFUNCTYPE(ctypes.c_long, wintypes.HWND, wintypes.UINT,
+                                 wintypes.WPARAM, wintypes.LPARAM,
+                                 ctypes.c_ssize_t)
+
+
+def _gem_icon(size):
+    """GlassMacro's own gem, as a Windows icon handle of the given size."""
+    try:
+        u = ctypes.WinDLL("user32")
+        u.LoadImageW.restype = wintypes.HANDLE
+        u.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR,
+                                 wintypes.UINT, ctypes.c_int, ctypes.c_int,
+                                 wintypes.UINT]
+        # IMAGE_ICON, LR_LOADFROMFILE
+        return u.LoadImageW(None, resource("glassmacro.ico"), 1, size, size,
+                            0x10)
+    except Exception:
+        return None
+
+
+def ask_to_update(new_version=None, notes=None):
+    """The update pop-up: a plain Windows box with GlassMacro's gem -
+    "v1.0.8 is available. Do you want to update?" - Yes / No. Blocks
+    until answered, so call it on its own thread. 'yes', 'no', or None."""
+    fn = _task_dialog_function()
+    play_foreground_sound()
+    text = (f"v{new_version} is available.\nDo you want to update?"
+            if new_version else
+            "An update is available.\nDo you want to update?")
+    if fn is None:                               # very old Windows: MessageBox
+        got = ctypes.windll.user32.MessageBoxW(
+            None, text, "GlassMacro", 0x40 | 0x4 | 0x40000 | 0x10000)
+        return "yes" if got == 6 else "no"
+    big, small = _gem_icon(32), _gem_icon(16)
+    u = ctypes.WinDLL("user32")
+    u.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
+                               wintypes.LPARAM]
+
+    def on_event(hwnd, msg, wparam, lparam, data):
+        if msg == 0 and big:                     # TDN_CREATED: title bar gem
+            u.SendMessageW(hwnd, 0x80, 1, big)    # WM_SETICON, ICON_BIG
+            u.SendMessageW(hwnd, 0x80, 0, small or big)
+        return 0
+    callback = _TDCALLBACK(on_event)
+    cfg = _TASKDIALOGCONFIG()
+    cfg.cbSize = ctypes.sizeof(_TASKDIALOGCONFIG)
+    cfg.dwFlags = 0x0002 | 0x0008                # USE_HICON_MAIN | ALLOW_CANCEL
+    cfg.dwCommonButtons = 0x2 | 0x4              # Yes | No
+    cfg.pszWindowTitle = "GlassMacro"
+    cfg.hMainIcon = big or ctypes.windll.user32.LoadIconW(
+        None, ctypes.cast(ctypes.c_void_p(32516), wintypes.LPCWSTR))
+    cfg.pszContent = text                        # no headline: a plain box
+    cfg.nDefaultButton = 6                       # Yes
+    cfg.pfCallback = ctypes.cast(callback, ctypes.c_void_p).value
+    pressed = ctypes.c_int(0)
+    if fn(ctypes.byref(cfg), ctypes.byref(pressed), None, None) != 0:
+        return None
+    return "yes" if pressed.value == 6 else "no"
+
+
 class WarningPopup:
     """Shows Windows' warning pop-up. show() blocks until it is closed, so
     run it on its own thread - never on the Tk thread."""
@@ -1022,36 +1319,42 @@ class WarningPopup:
         self.last = 0.0
         self.open = False
 
-    def show(self, title, headline, details, settings_button=True):
-        """'settings', 'ok', or None if no pop-up could be shown."""
+    def show(self, title, headline, details, settings_button=True,
+             yes_no=False):
+        """'settings', 'ok', 'yes', 'no', or None if nothing could be shown.
+        yes_no: an information pop-up with Yes / No instead of a warning."""
         self.open, self.last = True, time.time()
         try:
             fn = _task_dialog_function()
             icon = ctypes.windll.user32.LoadIconW(
-                None, ctypes.cast(ctypes.c_void_p(32515), wintypes.LPCWSTR))
+                None, ctypes.cast(ctypes.c_void_p(32516 if yes_no else 32515),
+                                  wintypes.LPCWSTR))
             play_foreground_sound()
             if fn is None:                       # very old Windows: MessageBox
-                flags = 0x30 | 0x40000 | 0x10000  # WARNING, TOPMOST, FOREGROUND
-                ctypes.windll.user32.MessageBoxW(None, f"{headline}\n\n{details}",
-                                                 title, flags)
-                return "ok"
+                flags = (0x40 | 0x4 if yes_no else 0x30) | 0x40000 | 0x10000
+                got = ctypes.windll.user32.MessageBoxW(
+                    None, f"{headline}\n\n{details}", title, flags)
+                return ("yes" if got == 6 else "no") if yes_no else "ok"
             buttons = (_TDBUTTON * 1)(_TDBUTTON(_ID_SETTINGS,
                                                 "Open display settings"))
             cfg = _TASKDIALOGCONFIG()
             cfg.cbSize = ctypes.sizeof(_TASKDIALOGCONFIG)
             cfg.dwFlags = _TDF_USE_HICON_MAIN | _TDF_ALLOW_CANCEL
-            cfg.dwCommonButtons = _TDCBF_OK
+            cfg.dwCommonButtons = 0x2 | 0x4 if yes_no else _TDCBF_OK
             cfg.pszWindowTitle = title
             cfg.hMainIcon = icon
             cfg.pszMainInstruction = headline
             cfg.pszContent = details
-            if settings_button:
+            if settings_button and not yes_no:
                 cfg.cButtons = 1
                 cfg.pButtons = buttons
-            cfg.nDefaultButton = _ID_SETTINGS if settings_button else 1
+            cfg.nDefaultButton = (6 if yes_no else
+                                  _ID_SETTINGS if settings_button else 1)
             pressed = ctypes.c_int(0)
             if fn(ctypes.byref(cfg), ctypes.byref(pressed), None, None) != 0:
                 return None
+            if yes_no:
+                return "yes" if pressed.value == 6 else "no"
             return "settings" if pressed.value == _ID_SETTINGS else "ok"
         finally:
             self.open = False
@@ -1189,6 +1492,7 @@ class GlassMacro(ctk.CTk):
         threading.Thread(target=self._update_worker, daemon=True).start()
         keyboard.add_hotkey("f8", self._hotkey)
         self.log(f"--- {APP_NAME} v{APP_VER} opened ---")
+        self._after_update()
         self._warn_display()
         self.protocol("WM_DELETE_WINDOW", self._close)
 
@@ -2091,9 +2395,10 @@ class GlassMacro(ctk.CTk):
         """True once a newer release has been found and shown."""
         if not self.settings.get("check_updates", True):
             return False
-        found = latest_release()
+        info = release_info()
+        found = (info["version"], info["page"]) if info else None
         if found and version_tuple(found[0]) > version_tuple(APP_VER):
-            self._ui(lambda f=found: self._show_update(*f))
+            self._ui(lambda f=found, i=info: self._show_update(*f, info=i))
             return True                   # one notice is enough
         # one quiet line in Full log / log.txt, so "did it even check?" has
         # an answer - the feed ignores it
@@ -2103,18 +2408,176 @@ class GlassMacro(ctk.CTk):
         self._ui(lambda n=note: self.log(n))
         return False
 
-    def _show_update(self, version, url):
+    def _show_update(self, version, url, info=None):
         self._update_url = url
-        self.lnk_update.configure(text=f"Update {version} available ›")
+        self._update_info = info or {"version": version, "page": url,
+                                     "zip": None, "sha256": None}
+        self.lnk_update.configure(text=f"Update {version} available \u203a")
         self.lbl_res.pack_forget()
         self.lnk_update.pack(side="right")
         self.log(f"update available: GlassMacro {version}")
+        self._ask_update()
 
     def _open_update(self):
+        """The header link: ask again, the same way."""
+        self._update_asked = False
+        self._ask_update()
+
+    def _open_release_page(self):
         try:
             os.startfile(self._update_url)
         except Exception as exc:
             self.log(f"could not open the release page: {exc}")
+
+    def _ask_update(self):
+        """'An update is available - do you want to update?'. Never while a
+        run is going: that would end someone's AFK session - it waits for
+        the run to stop instead (see _tick)."""
+        info = getattr(self, "_update_info", None)
+        if not info or getattr(self, "_updating", False):
+            return
+        if self.running:
+            self._update_pending = True
+            return
+        if getattr(self, "_update_asked", False):
+            return
+        if not hasattr(self, "_popup"):
+            self._popup = WarningPopup()
+        pop = self._popup
+        if pop.open:
+            # another pop-up (a screen warning) is up - ask once it's gone,
+            # rather than never
+            self.after(3000, self._ask_update)
+            return
+        self._update_asked = True
+        self._update_pending = False
+
+        def run():
+            pop.open, pop.last = True, time.time()
+            try:
+                choice = ask_to_update(info["version"])
+            except Exception as exc:
+                choice = None
+                self._ui(lambda e=str(exc): self.log(
+                    f"could not show the update pop-up: {e}"))
+            finally:
+                pop.open = False
+            self._ui(lambda c=choice: self._update_answer(c))
+        threading.Thread(target=run, daemon=True).start()
+
+    def _update_answer(self, choice):
+        self.log(f"update pop-up: {choice or 'not shown'}")
+        if choice != "yes":
+            return
+        if self.running:
+            # they said yes, then started a run before clicking it - keep the
+            # yes and update the moment the run stops (see _tick)
+            self._update_yes_pending = True
+            self.log("update: will install when this run stops")
+            return
+        self._start_update()
+
+    def _can_self_update(self):
+        """Only a built app can replace itself, and only somewhere it may
+        write. Anything else: the release page does it by hand."""
+        if not getattr(sys, "frozen", False):
+            return False
+        info = self._update_info
+        if not info.get("zip") or not info.get("sha256"):
+            return False
+        here = os.path.dirname(os.path.abspath(sys.executable))
+        probe = os.path.join(here, ".glassmacro-write-test")
+        try:
+            with open(probe, "w") as fh:
+                fh.write("ok")
+            os.remove(probe)
+            return True
+        except OSError:
+            return False
+
+    def _start_update(self):
+        if self.running or getattr(self, "_updating", False):
+            return
+        if not self._can_self_update():
+            self.log("update: this copy can't update itself - opening the "
+                     "download page")
+            self._open_release_page()
+            return
+        self._updating = True
+        info = self._update_info
+        self.set_state(f"Updating to {info['version']}",
+                       "Downloading \u00b7 0%", ACCENT)
+        threading.Thread(target=self._update_job, args=(info,),
+                         daemon=True).start()
+
+    def _update_job(self, info):
+        """Worker thread: download, check, unpack, then hand over to the new
+        version and close. Any failure: nothing changes."""
+        try:
+            os.makedirs(UPDATE_DIR, exist_ok=True)
+            zip_path = os.path.join(UPDATE_DIR, f"GlassMacro-v{info['version']}.zip")
+            shown = [-1]
+
+            def progress(done, total):
+                pct = int(done * 100 / total) if total else 0
+                if pct != shown[0]:
+                    shown[0] = pct
+                    mb = f" of {total / 1048576:.0f} MB" if total else ""
+                    self._ui(lambda p=pct, m=mb: self.set_state(
+                        f"Updating to {info['version']}",
+                        f"Downloading \u00b7 {p}%{m}", ACCENT))
+            if not download_update(info["zip"], info["sha256"], zip_path,
+                                   progress):
+                raise RuntimeError("the download didn't arrive in one piece")
+            self._ui(lambda: self.set_state(f"Updating to {info['version']}",
+                                            "Unpacking...", ACCENT))
+            new_exe = stage_update(zip_path, os.path.join(UPDATE_DIR, "new"))
+            try:
+                os.remove(zip_path)
+            except OSError:
+                pass
+            if not new_exe:
+                raise RuntimeError("the download wasn't a GlassMacro build")
+            here = os.path.dirname(os.path.abspath(sys.executable))
+            subprocess.Popen(
+                [new_exe, "--finish-update", here, str(os.getpid()), APP_VER],
+                cwd=os.path.dirname(new_exe), close_fds=True,
+                creationflags=0x00000008 | 0x00000200)  # DETACHED, NEW_GROUP
+            self._ui(lambda: self.log(
+                f"update: handing over to {info['version']} - GlassMacro "
+                f"will reopen by itself"))
+            self._ui(self._close)
+        except Exception as exc:
+            self._updating = False
+            self._ui(lambda e=str(exc): self._update_failed(e))
+
+    def _update_failed(self, why):
+        self.log(f"update failed: {why}")
+        self.set_state("Update didn't work",
+                       "Nothing changed. Opening the download page instead.",
+                       RED)
+        self._open_release_page()
+
+    def _after_update(self):
+        """First start after an update: say so, and tidy the staging folder
+        once the hand-over process has had time to exit."""
+        flag = os.path.join(UPDATE_DIR, "updated.txt")
+        try:
+            with open(flag, encoding="utf-8") as fh:
+                old = fh.read().strip()
+            os.remove(flag)
+        except OSError:
+            return          # not just updated: never touch the staging folder,
+            #                 a hand-over might be running from it right now
+        self.log(f"updated: GlassMacro {old} -> {APP_VER}")
+
+        def tidy():
+            time.sleep(20)
+            shutil.rmtree(os.path.join(UPDATE_DIR, "new"), ignore_errors=True)
+            shutil.rmtree(os.path.join(
+                os.path.dirname(os.path.abspath(sys.executable)),
+                "_internal.old"), ignore_errors=True)
+        threading.Thread(target=tidy, daemon=True).start()
 
     def open_data(self):
         try:
@@ -2232,6 +2695,11 @@ class GlassMacro(ctk.CTk):
             elif self._was_running:
                 # stopped - by F8, by Stop, or the worker ending on an error
                 self._was_running = False
+                if getattr(self, "_update_yes_pending", False):
+                    self._update_yes_pending = False
+                    self.after(1500, self._start_update)
+                elif getattr(self, "_update_pending", False):
+                    self.after(1500, self._ask_update)
                 self._last_run = {"secs": now - (self._run_t0 or now),
                                   "end": time.strftime("%H:%M")}
                 self._show_playtime(self._last_run["secs"], live=False)
@@ -2370,7 +2838,11 @@ class GlassMacro(ctk.CTk):
          "Screen isn't 1920×1080", "clicks may miss"),
         ("NOTE: those two points are almost", "needsetup", "!", "AMBER",
          "Setup needs redoing", "the same spot was hovered twice"),
-        ("update available:", "update", "↑", "ACCENT",
+        ("updated: GlassMacro", "updated", "\u2713", "GREEN",
+         "Updated", "you're on the newest version"),
+        ("update failed:", "updfail", "!", "AMBER", "Update didn't work",
+         "nothing changed - try the download page"),
+        ("update available:", "update", "\u2191", "ACCENT",
          "Update available", "the link is at the top"),
         ("calibration saved", "setup", "✓", "GREEN", "Weapons set up",
          ""),
@@ -3052,6 +3524,9 @@ class GlassMacro(ctk.CTk):
         self._ui(lambda: self.btn_watch.configure(text="Live test"))
 
     def toggle_run(self):
+        if getattr(self, "_updating", False):
+            self.log("updating - GlassMacro will reopen in a moment")
+            return
         if self.running:
             self.running = False
             self._paint_run()
@@ -3430,4 +3905,7 @@ class GlassMacro(ctk.CTk):
 
 
 if __name__ == "__main__":
-    GlassMacro().mainloop()
+    if len(sys.argv) >= 5 and sys.argv[1] == "--finish-update":
+        finish_update(sys.argv[2], sys.argv[3], sys.argv[4])
+    else:
+        GlassMacro().mainloop()

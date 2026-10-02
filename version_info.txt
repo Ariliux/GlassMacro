@@ -4,8 +4,8 @@
 # Keep filevers/prodvers and the strings in step with APP_VER in glassmacro.py.
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 6, 0),
-    prodvers=(1, 0, 6, 0),
+    filevers=(1, 0, 7, 0),
+    prodvers=(1, 0, 7, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -18,12 +18,12 @@ VSVersionInfo(
       StringTable('040904B0', [
         StringStruct('CompanyName', 'GlassMacro'),
         StringStruct('FileDescription', 'GlassMacro - AFK helper for Roblox Rivals'),
-        StringStruct('FileVersion', '1.0.6'),
+        StringStruct('FileVersion', '1.0.7'),
         StringStruct('InternalName', 'GlassMacro'),
         StringStruct('LegalCopyright', 'Copyright (c) 2026 GlassMacro'),
         StringStruct('OriginalFilename', 'GlassMacro.exe'),
         StringStruct('ProductName', 'GlassMacro'),
-        StringStruct('ProductVersion', '1.0.6'),
+        StringStruct('ProductVersion', '1.0.7'),
       ])
     ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])

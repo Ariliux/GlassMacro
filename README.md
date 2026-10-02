@@ -42,7 +42,7 @@ It got me the wrap. I've left it running for 10+ hours straight, so now I'm shar
 
 ## Installing it
 
-1. Go to **[Releases](../../releases/latest)** and download `GlassMacro-v1.0.6.zip`.
+1. Go to **[Releases](../../releases/latest)** and download `GlassMacro-v1.0.7.zip`.
    Only get it from here, not from random re-uploads.
 2. Right-click the zip → **Extract All**. Don't run it from inside the zip.
 3. Open the folder and run **`GlassMacro.exe`**.
@@ -78,6 +78,9 @@ weapons and the grid moves, hit **Redo setup** and do the same three hovers.
   while it's playing, amber when it's paused or reconnecting.
 - **Playtime** is the big number. It also shows how many loadouts it's picked and how many
   times it's rejoined, and it keeps your last run on screen after you stop.
+- **It updates itself.** When a new version is out, it asks *"v1.0.8 is available. Do you
+  want to update?"* Click **Yes** and it downloads the update, closes, updates and opens
+  again. Your weapon setup and settings stay. It never asks in the middle of a run.
 - **Activity** lists what happened in plain English, newest first. **Full log** has every
   detail, which helps with bug reports.
 
@@ -120,8 +123,10 @@ nothing you download ever should.
   - It listens for F8 to start and stop, plus Esc during setup. It doesn't record anything
     else you type.
   - The only program it ever closes or reopens is Roblox.
-  - The only thing it ever contacts is GitHub, to check whether there's a newer
-    version. Nothing about you or your game is sent, and you can turn it off in
+  - The only thing it ever contacts is GitHub: to check whether there's a newer
+    version, and, if you click Yes, to download it. It only installs updates from this
+    repo's releases, and only if the download's fingerprint matches what GitHub lists.
+    Nothing about you or your game is sent, and you can turn update checks off in
     Settings → **Check for updates**. The pictures it saves stay in your data folder.
 
 ## Found a bug?
