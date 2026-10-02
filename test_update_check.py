@@ -21,6 +21,22 @@ import glassmacro as G                                       # noqa: E402
 
 assert G.DATA_DIR.startswith(os.environ["LOCALAPPDATA"]), G.DATA_DIR
 
+class _FakeNotifier:
+    """Records warning pop-ups instead of showing them - tests never open
+    real ones on the screen."""
+    shown = []
+
+    def __init__(self):
+        self.last = 0.0
+        self.open = False
+
+    def show(self, title, headline, details, settings_button=True):
+        _FakeNotifier.shown.append((headline, details))
+        return "ok"
+
+
+G.WarningPopup = _FakeNotifier
+
 fails = 0
 
 

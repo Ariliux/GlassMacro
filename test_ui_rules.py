@@ -23,6 +23,22 @@ G.latest_release = lambda *a, **k: None   # tests never touch the network
 
 assert G.DATA_DIR.startswith(os.environ["LOCALAPPDATA"]), G.DATA_DIR
 
+class _FakeNotifier:
+    """Records warning pop-ups instead of showing them - tests never open
+    real ones on the screen."""
+    shown = []
+
+    def __init__(self):
+        self.last = 0.0
+        self.open = False
+
+    def show(self, title, headline, details, settings_button=True):
+        _FakeNotifier.shown.append((headline, details))
+        return "ok"
+
+
+G.WarningPopup = _FakeNotifier
+
 src = open(os.path.join(HERE, "glassmacro.py"), encoding="utf-8").read()
 # the rule tables themselves do not count as somewhere the text is logged
 body = re.sub(r"(STATUS_RULES|FEED_RULES) = \(.*?\n    \)\n", "", src,
@@ -135,6 +151,51 @@ before = app.txt._textbox.get("1.0", "end").count("screen check")
 app._recheck_display()
 check(app.txt._textbox.get("1.0", "end").count("screen check") == before,
       "nothing changed = nothing logged (no spam every 5 seconds)")
+
+# the warning pop-up (faked here - tests never open real ones)
+import time as _time                                         # noqa: E402
+
+
+def wait_for(n):
+    """The pop-up runs on its own thread - give it a moment."""
+    for _ in range(50):
+        if len(_FakeNotifier.shown) >= n:
+            return
+        _time.sleep(0.02)
+
+
+_FakeNotifier.shown.clear()
+if hasattr(app, "_popup"):
+    del app._popup
+G.screen_size = lambda: (1920, 1080)
+G.display_scaling = lambda: 150
+app._warn_display()
+wait_for(1)
+check(len(_FakeNotifier.shown) == 1
+      and _FakeNotifier.shown[0][0] == "Windows scaling is 150%"
+      and "Settings" in _FakeNotifier.shown[0][1],
+      f"150%: one pop-up, naming 150% and where to fix it ({_FakeNotifier.shown})")
+app._warn_display()
+wait_for(2)
+check(len(_FakeNotifier.shown) == 1,
+      "a second warning within a minute does NOT pop up again")
+app._popup.last = 0.0                         # a minute later...
+G.display_scaling = lambda: 100
+app._warn_display()
+wait_for(2)
+check(len(_FakeNotifier.shown) == 1, "at 100% there is no pop-up")
+G.screen_size = lambda: (2560, 1440)
+app._warn_display()
+wait_for(2)
+check(len(_FakeNotifier.shown) == 2 and "2560" in _FakeNotifier.shown[1][0],
+      "a wrong screen size pops up too")
+app._popup.last = 0.0
+app._popup.open = True                        # one already on screen
+G.display_scaling = lambda: 150
+app._warn_display()
+wait_for(3)
+check(len(_FakeNotifier.shown) == 2, "never two pop-ups at once")
+app._popup.open = False
 G.display_scaling, G.screen_size = real_scaling, real_size
 
 # a run stopped within a second must report ITS length, not the last run's

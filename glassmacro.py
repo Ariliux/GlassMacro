@@ -34,7 +34,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import keyboard
 
-APP_NAME, APP_VER = "GlassMacro", "1.0.5"
+APP_NAME, APP_VER = "GlassMacro", "1.0.6"
 
 # Calibration lives in AppData, never beside the exe: a PyInstaller onefile
 # build unpacks to a temp folder that is deleted on exit, so anything saved
@@ -430,10 +430,16 @@ SUPPORTED_SCALING = 100
 def display_scaling():
     """Windows display scaling of the MAIN screen, in percent (100, 125...).
 
+    GLASSMACRO_TEST_SCALING=150 in the environment pretends, so the built app
+    can be checked end to end without touching anyone's display settings.
+
     The main screen, not wherever this window sits: that is the screen every
     screenshot here is taken of. Needs DPI awareness (CustomTkinter turns it
     on), or Windows answers 100% whatever the truth is.
     """
+    fake = os.environ.get("GLASSMACRO_TEST_SCALING", "")
+    if fake.isdigit():
+        return int(fake)
     try:
         u = ctypes.WinDLL("user32")          # own handle: own argtypes
         u.MonitorFromPoint.restype = wintypes.HMONITOR
@@ -896,6 +902,159 @@ def save_settings(data):
         os.replace(tmp, SETTINGS_PATH)
     except Exception:
         pass
+
+
+
+# ------------------------------------------------------ warning pop-up ---
+# Windows' own warning pop-up - the task dialog: yellow triangle, a bold
+# headline, the details, and real buttons - with the Windows 11 "Foreground"
+# sound. A corner notification was tried first and was too easy to ignore.
+#
+# The sound is played here, once. The dialog gets the warning icon as a plain
+# icon handle rather than "the warning icon", so Windows has no event to play
+# its own sound for - on Windows 11 that would be the softer "Background" one,
+# and the two would play on top of each other.
+class _TDBUTTON(ctypes.Structure):
+    _pack_ = 1
+    _fields_ = [("nButtonID", ctypes.c_int), ("pszButtonText", wintypes.LPCWSTR)]
+
+
+class _TASKDIALOGCONFIG(ctypes.Structure):
+    _pack_ = 1                     # commctrl.h declares it inside pshpack1
+    _fields_ = [("cbSize", wintypes.UINT), ("hwndParent", wintypes.HWND),
+                ("hInstance", wintypes.HINSTANCE), ("dwFlags", ctypes.c_int),
+                ("dwCommonButtons", ctypes.c_int),
+                ("pszWindowTitle", wintypes.LPCWSTR),
+                ("hMainIcon", wintypes.HICON),
+                ("pszMainInstruction", wintypes.LPCWSTR),
+                ("pszContent", wintypes.LPCWSTR), ("cButtons", wintypes.UINT),
+                ("pButtons", ctypes.POINTER(_TDBUTTON)),
+                ("nDefaultButton", ctypes.c_int),
+                ("cRadioButtons", wintypes.UINT),
+                ("pRadioButtons", ctypes.POINTER(_TDBUTTON)),
+                ("nDefaultRadioButton", ctypes.c_int),
+                ("pszVerificationText", wintypes.LPCWSTR),
+                ("pszExpandedInformation", wintypes.LPCWSTR),
+                ("pszExpandedControlText", wintypes.LPCWSTR),
+                ("pszCollapsedControlText", wintypes.LPCWSTR),
+                ("hFooterIcon", wintypes.HICON),
+                ("pszFooter", wintypes.LPCWSTR),
+                ("pfCallback", ctypes.c_void_p),
+                ("lpCallbackData", ctypes.c_void_p),
+                ("cxWidth", wintypes.UINT)]
+
+
+class _ACTCTXW(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.ULONG), ("dwFlags", wintypes.DWORD),
+                ("lpSource", wintypes.LPCWSTR),
+                ("wProcessorArchitecture", wintypes.USHORT),
+                ("wLangId", wintypes.USHORT),
+                ("lpAssemblyDirectory", wintypes.LPCWSTR),
+                ("lpResourceName", wintypes.LPCWSTR),
+                ("lpApplicationName", wintypes.LPCWSTR),
+                ("hModule", wintypes.HMODULE)]
+
+
+_TDF_USE_HICON_MAIN, _TDF_ALLOW_CANCEL = 0x0002, 0x0008
+_TDCBF_OK = 0x0001
+_ID_SETTINGS = 100
+NOTIFY_GAP = 60.0            # never more than one warning a minute
+FOREGROUND_WAV = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                              "Media", "Windows Foreground.wav")
+
+
+def _task_dialog_function():
+    """TaskDialogIndirect from Common Controls 6, or None.
+
+    Version 6 only loads inside an "activation context". The built exe's
+    manifest asks for it; plain python.exe does not, so borrow the one
+    Windows ships inside shell32.dll (resource 124) for the call.
+    """
+    k32 = ctypes.WinDLL("kernel32")
+    k32.CreateActCtxW.restype = wintypes.HANDLE
+    k32.CreateActCtxW.argtypes = [ctypes.POINTER(_ACTCTXW)]
+    k32.ActivateActCtx.argtypes = [wintypes.HANDLE,
+                                   ctypes.POINTER(ctypes.c_size_t)]
+    system = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                          "System32")
+    ctx = _ACTCTXW()
+    ctx.cbSize = ctypes.sizeof(_ACTCTXW)
+    ctx.dwFlags = 0x004 | 0x008     # ASSEMBLY_DIRECTORY_VALID | RESOURCE_NAME
+    ctx.lpSource = os.path.join(system, "shell32.dll")
+    ctx.lpAssemblyDirectory = system
+    ctx.lpResourceName = ctypes.cast(ctypes.c_void_p(124), wintypes.LPCWSTR)
+    handle = k32.CreateActCtxW(ctypes.byref(ctx))
+    if handle and handle != wintypes.HANDLE(-1).value:
+        cookie = ctypes.c_size_t()
+        k32.ActivateActCtx(handle, ctypes.byref(cookie))
+    try:
+        fn = ctypes.WinDLL("comctl32").TaskDialogIndirect
+    except (OSError, AttributeError):
+        return None
+    fn.restype = ctypes.c_long
+    fn.argtypes = [ctypes.POINTER(_TASKDIALOGCONFIG),
+                   ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
+                   ctypes.POINTER(ctypes.c_int)]
+    return fn
+
+
+def play_foreground_sound():
+    """The Windows 11 "Foreground" sound, once, without waiting for it."""
+    try:
+        import winsound
+        if os.path.exists(FOREGROUND_WAV):
+            winsound.PlaySound(FOREGROUND_WAV, winsound.SND_FILENAME
+                               | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+            return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.user32.MessageBeep(0x10)  # Critical Stop = Foreground
+    except Exception:
+        pass
+
+
+class WarningPopup:
+    """Shows Windows' warning pop-up. show() blocks until it is closed, so
+    run it on its own thread - never on the Tk thread."""
+
+    def __init__(self):
+        self.last = 0.0
+        self.open = False
+
+    def show(self, title, headline, details, settings_button=True):
+        """'settings', 'ok', or None if no pop-up could be shown."""
+        self.open, self.last = True, time.time()
+        try:
+            fn = _task_dialog_function()
+            icon = ctypes.windll.user32.LoadIconW(
+                None, ctypes.cast(ctypes.c_void_p(32515), wintypes.LPCWSTR))
+            play_foreground_sound()
+            if fn is None:                       # very old Windows: MessageBox
+                flags = 0x30 | 0x40000 | 0x10000  # WARNING, TOPMOST, FOREGROUND
+                ctypes.windll.user32.MessageBoxW(None, f"{headline}\n\n{details}",
+                                                 title, flags)
+                return "ok"
+            buttons = (_TDBUTTON * 1)(_TDBUTTON(_ID_SETTINGS,
+                                                "Open display settings"))
+            cfg = _TASKDIALOGCONFIG()
+            cfg.cbSize = ctypes.sizeof(_TASKDIALOGCONFIG)
+            cfg.dwFlags = _TDF_USE_HICON_MAIN | _TDF_ALLOW_CANCEL
+            cfg.dwCommonButtons = _TDCBF_OK
+            cfg.pszWindowTitle = title
+            cfg.hMainIcon = icon
+            cfg.pszMainInstruction = headline
+            cfg.pszContent = details
+            if settings_button:
+                cfg.cButtons = 1
+                cfg.pButtons = buttons
+            cfg.nDefaultButton = _ID_SETTINGS if settings_button else 1
+            pressed = ctypes.c_int(0)
+            if fn(ctypes.byref(cfg), ctypes.byref(pressed), None, None) != 0:
+                return None
+            return "settings" if pressed.value == _ID_SETTINGS else "ok"
+        finally:
+            self.open = False
 
 
 class GlassButton(ctk.CTkFrame):
@@ -1860,6 +2019,33 @@ class GlassMacro(ctk.CTk):
             self._warn_display()             # logs, and repaints the header
             self._paint_guide_warning()
 
+    def _notify(self, headline, details):
+        """Windows' warning pop-up with the Foreground sound - at most one a
+        minute, and never two at once. On its own thread, so the window and
+        the macro carry on behind it."""
+        if not hasattr(self, "_popup"):
+            self._popup = WarningPopup()
+        pop = self._popup
+        if pop.open or time.time() - pop.last < NOTIFY_GAP:
+            return
+        pop.last = time.time()
+
+        def run():
+            try:
+                choice = pop.show("GlassMacro", headline, details)
+            except Exception as exc:
+                self._ui(lambda e=str(exc): self.log(
+                    f"could not show the warning pop-up: {e}"))
+                return
+            if choice == "settings":
+                try:
+                    os.startfile("ms-settings:display")
+                except Exception:
+                    pass
+            self._ui(lambda c=choice: self.log(
+                f"warning pop-up shown: {headline} ({c or 'not shown'})"))
+        threading.Thread(target=run, daemon=True).start()
+
     def _warn_display(self):
         """A heads-up for each thing about this screen GlassMacro can't
         handle. Runs at open and on every Start; _recheck_display keeps it
@@ -1873,6 +2059,15 @@ class GlassMacro(ctk.CTk):
             self.log(f"heads up: Windows scaling is {pct}% - GlassMacro needs "
                      f"100% (Settings > System > Display > Scale), so clicks "
                      f"may miss")
+            self._notify(f"Windows scaling is {pct}%",
+                         "GlassMacro only works at 100% scaling - at "
+                         f"{pct}% its clicks land in the wrong place.\n\n"
+                         "Set it to 100% in Settings \u203a System \u203a "
+                         "Display \u203a Scale.")
+        elif (sw, sh) != SUPPORTED_SCREEN:
+            self._notify(f"This screen is {sw}\u00d7{sh}",
+                         "GlassMacro only works on 1920\u00d71080 screens for "
+                         "now, so its clicks may land in the wrong place.")
         try:
             self._screen_ok = (sw, sh) == SUPPORTED_SCREEN
             self._paint_res(sw, sh, pct)
