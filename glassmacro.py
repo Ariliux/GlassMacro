@@ -34,7 +34,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import keyboard
 
-APP_NAME, APP_VER = "GlassMacro", "1.0.4"
+APP_NAME, APP_VER = "GlassMacro", "1.0.5"
 
 # Calibration lives in AppData, never beside the exe: a PyInstaller onefile
 # build unpacks to a temp folder that is deleted on exit, so anything saved
@@ -420,6 +420,38 @@ FULLSCREEN_SETTLE = 1.5
 def screen_size():
     """Primary screen in real pixels (CustomTkinter makes us DPI aware)."""
     return _user32.GetSystemMetrics(0), _user32.GetSystemMetrics(1)
+
+
+# Every click and detector is lined up for 100% Windows display scaling - the
+# only setup GlassMacro is tested on. A 1080p laptop usually ships at 150%.
+SUPPORTED_SCALING = 100
+
+
+def display_scaling():
+    """Windows display scaling of the MAIN screen, in percent (100, 125...).
+
+    The main screen, not wherever this window sits: that is the screen every
+    screenshot here is taken of. Needs DPI awareness (CustomTkinter turns it
+    on), or Windows answers 100% whatever the truth is.
+    """
+    try:
+        u = ctypes.WinDLL("user32")          # own handle: own argtypes
+        u.MonitorFromPoint.restype = wintypes.HMONITOR
+        u.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+        sh = ctypes.WinDLL("shcore")
+        sh.GetDpiForMonitor.argtypes = [wintypes.HMONITOR, ctypes.c_int,
+                                        ctypes.POINTER(ctypes.c_uint),
+                                        ctypes.POINTER(ctypes.c_uint)]
+        mon = u.MonitorFromPoint(wintypes.POINT(0, 0), 1)  # the primary one
+        dx, dy = ctypes.c_uint(), ctypes.c_uint()
+        if sh.GetDpiForMonitor(mon, 0, ctypes.byref(dx), ctypes.byref(dy)) == 0:
+            return round(dx.value * 100 / 96)
+    except Exception:
+        pass
+    try:
+        return round(_user32.GetDpiForSystem() * 100 / 96)
+    except Exception:
+        return SUPPORTED_SCALING
 
 
 def roblox_fullscreen(h):
@@ -998,10 +1030,7 @@ class GlassMacro(ctk.CTk):
         threading.Thread(target=self._update_worker, daemon=True).start()
         keyboard.add_hotkey("f8", self._hotkey)
         self.log(f"--- {APP_NAME} v{APP_VER} opened ---")
-        sw, sh = screen_size()
-        if (sw, sh) != SUPPORTED_SCREEN:
-            self.log(f"heads up: this screen is {sw}x{sh} - GlassMacro is made "
-                     f"for 1920x1080, so clicks may miss")
+        self._warn_display()
         self.protocol("WM_DELETE_WINDOW", self._close)
 
     # -- cross-thread UI. tkinter's after() is not thread safe, so workers
@@ -1148,6 +1177,7 @@ class GlassMacro(ctk.CTk):
 
         sw, sh = screen_size()
         self._screen_ok = (sw, sh) == SUPPORTED_SCREEN
+        self._scaling = display_scaling()
 
         # ---- header: gem, wordmark, version, screen ----
         head = ctk.CTkFrame(self, fg_color="transparent", height=44)
@@ -1164,12 +1194,8 @@ class GlassMacro(ctk.CTk):
         ctk.CTkLabel(head, text=APP_VER, text_color=MUTED,
                      font=self.F(11)).pack(side="left", padx=(6, 0),
                                            pady=(3, 0))
-        self.lbl_res = ctk.CTkLabel(
-            head, font=self.F(11),
-            text=("1920×1080" if self._screen_ok
-                  else f"{sw}×{sh} · made for 1920×1080"),
-            text_color=MUTED if self._screen_ok else AMBER,
-        )
+        self.lbl_res = ctk.CTkLabel(head, font=self.F(11), text="")
+        self._paint_res(sw, sh, self._scaling)
         self.lbl_res.pack(side="right")
         self.lnk_update = ctk.CTkLabel(head, text="", text_color=ACCENT,
                                        font=self.F(11, semi=True),
@@ -1330,17 +1356,21 @@ class GlassMacro(ctk.CTk):
         self.lbl_intro.pack(fill="x", pady=(4, 0))
         self._guide_body = body
 
-        if not self._screen_ok:
-            warn = ctk.CTkFrame(body, fg_color=AMBER_DIM, corner_radius=10)
-            warn.pack(fill="x", pady=(12, 0))
-            sw, sh = screen_size()
-            ctk.CTkLabel(warn, text=(f"This screen is {sw}×{sh}. GlassMacro "
-                                     f"only works on 1920×1080 for now."),
-                         text_color=AMBER, font=self.F(12), anchor="w",
-                         height=18).pack(fill="x", padx=12, pady=8)
+        # built once and shown or hidden as things change - fixing Windows
+        # scaling with the app open must make the box go away
+        self._warn_box = ctk.CTkFrame(body, fg_color=AMBER_DIM,
+                                      corner_radius=10)
+        self.lbl_warn = ctk.CTkLabel(self._warn_box, text="", text_color=AMBER,
+                                     font=self.F(12), anchor="w",
+                                     justify="left", wraplength=440,
+                                     height=18)
+        self.lbl_warn.pack(fill="x", padx=12, pady=8)
+        self._rewrap_on(self._warn_box, (self.lbl_warn,), indent=24)
 
         prog = ctk.CTkFrame(body, fg_color="transparent")
         prog.pack(fill="x", pady=(14, 0))
+        self._guide_prog = prog
+        self._paint_guide_warning()
         self._segs = []
         for i in range(3):
             prog.grid_columnconfigure(i, weight=1, uniform="p")
@@ -1775,6 +1805,81 @@ class GlassMacro(ctk.CTk):
         finally:
             self._slider_guard = False
 
+    # ---- screen checks ----
+    def _paint_res(self, sw, sh, pct):
+        screen_ok = (sw, sh) == SUPPORTED_SCREEN
+        scale_ok = pct == SUPPORTED_SCALING
+        if screen_ok and scale_ok:
+            text, colour = "1920\u00d71080", MUTED
+        elif scale_ok:
+            text, colour = (f"{sw}\u00d7{sh} \u00b7 made for "
+                            f"1920\u00d71080"), AMBER
+        elif screen_ok:
+            text, colour = f"{pct}% scaling \u00b7 needs 100%", AMBER
+        else:
+            text, colour = (f"{sw}\u00d7{sh} at {pct}% \u00b7 needs "
+                            f"1920\u00d71080 at 100%"), AMBER
+        self.lbl_res.configure(text=text, text_color=colour)
+
+    def _paint_guide_warning(self):
+        problems = []
+        if not self._screen_ok:
+            sw, sh = screen_size()
+            problems.append(f"This screen is {sw}\u00d7{sh}. GlassMacro only "
+                            f"works on 1920\u00d71080 for now.")
+        if self._scaling != SUPPORTED_SCALING:
+            problems.append(f"Windows scaling is {self._scaling}%. Set it to "
+                            f"100% first: Settings \u203a System \u203a "
+                            f"Display \u203a Scale.")
+        if problems:
+            self.lbl_warn.configure(text="\n".join(problems))
+            if not self._warn_box.winfo_manager():
+                self._warn_box.pack(fill="x", pady=(12, 0),
+                                    before=self._guide_prog)
+        elif self._warn_box.winfo_manager():
+            self._warn_box.pack_forget()
+
+    def _recheck_display(self):
+        """Every few seconds: did the screen size or Windows scaling change?
+        Without this, a warning stayed up after the user had fixed it -
+        and during setup there is no Start to press to re-check."""
+        (sw, sh), pct = screen_size(), display_scaling()
+        ok = (sw, sh) == SUPPORTED_SCREEN
+        if ok == self._screen_ok and pct == self._scaling:
+            return
+        self._screen_ok = ok
+        if ok and pct == SUPPORTED_SCALING:
+            self._scaling = pct
+            self._paint_res(sw, sh, pct)
+            self._paint_guide_warning()
+            self.log("screen check: 1920x1080 at 100% - all good now")
+            if not self.running and self._state_title in (
+                    "Set scaling to 100%", "Made for 1920\u00d71080"):
+                self._show_cal()             # back to Ready
+        else:
+            self._warn_display()             # logs, and repaints the header
+            self._paint_guide_warning()
+
+    def _warn_display(self):
+        """A heads-up for each thing about this screen GlassMacro can't
+        handle. Runs at open and on every Start; _recheck_display keeps it
+        current in between."""
+        (sw, sh), pct = screen_size(), display_scaling()
+        self._scaling = pct
+        if (sw, sh) != SUPPORTED_SCREEN:
+            self.log(f"heads up: this screen is {sw}x{sh} - GlassMacro is made "
+                     f"for 1920x1080, so clicks may miss")
+        if pct != SUPPORTED_SCALING:
+            self.log(f"heads up: Windows scaling is {pct}% - GlassMacro needs "
+                     f"100% (Settings > System > Display > Scale), so clicks "
+                     f"may miss")
+        try:
+            self._screen_ok = (sw, sh) == SUPPORTED_SCREEN
+            self._paint_res(sw, sh, pct)
+            self._paint_guide_warning()
+        except Exception:
+            pass
+
     # ---- updates ----
     def _update_switched(self):
         self.settings["check_updates"] = bool(self.sw_update.get())
@@ -1919,6 +2024,12 @@ class GlassMacro(ctk.CTk):
         """Once a second, main thread: playtime, 'since', setup countdown."""
         try:
             now = time.time()
+            self._ticks = getattr(self, "_ticks", 0) + 1
+            if self._ticks % 5 == 0:
+                try:
+                    self._recheck_display()
+                except Exception:
+                    pass
             if self.running and self.session_start:
                 self._run_t0 = self.session_start
                 self._was_running = True
@@ -1988,6 +2099,10 @@ class GlassMacro(ctk.CTk):
         ("couldn't make Roblox fullscreen", "Roblox isn't fullscreen",
          "Press F11 in Roblox · clicks can miss in a window.",
          "AMBER", None),
+        ("heads up: Windows scaling is", "Set scaling to 100%",
+         "Windows is at {n}%. Set it to 100% in Settings \u203a System "
+         "\u203a Display \u203a Scale - this clears by itself.", "AMBER",
+         None),
         ("heads up: this screen is", "Made for 1920×1080",
          "This screen is different, so clicks may land in the wrong place.",
          "AMBER", None),
@@ -2052,6 +2167,10 @@ class GlassMacro(ctk.CTk):
          "Back to fullscreen", "pressed F11"),
         ("couldn't make Roblox fullscreen", "nofs", "!", "AMBER",
          "Roblox isn't fullscreen", "press F11 in Roblox"),
+        ("screen check: 1920x1080 at 100%", "screenok", "\u2713", "GREEN",
+         "Screen settings look right", "1920\u00d71080 at 100%"),
+        ("heads up: Windows scaling is", "scaling", "!", "AMBER",
+         "Scaling isn't 100%", "set it to 100% in Windows display settings"),
         ("heads up: this screen is", "screen", "!", "AMBER",
          "Screen isn't 1920×1080", "clicks may miss"),
         ("NOTE: those two points are almost", "needsetup", "!", "AMBER",
@@ -2760,10 +2879,7 @@ class GlassMacro(ctk.CTk):
         if self.watching:
             self.toggle_watch()
         self._fs = self._fresh_fs()
-        sw, sh = screen_size()
-        if (sw, sh) != SUPPORTED_SCREEN:
-            self.log(f"heads up: this screen is {sw}x{sh} - GlassMacro is made "
-                     f"for 1920x1080, so clicks may miss")
+        self._warn_display()
         self.running = True
         self._paint_run()
         self.session_start = time.time()

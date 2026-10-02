@@ -86,6 +86,57 @@ check("×2" in first, "two picks in a row merge into one row with x2")
 check("random 1/3" not in first and "match 1.00" not in first,
       "developer detail stays out of the feed")
 
+# Windows scaling: 150% must warn everywhere, 100% must say nothing
+real_scaling, real_size = G.display_scaling, G.screen_size
+G.screen_size = lambda: (1920, 1080)
+G.display_scaling = lambda: 150
+lines_before = app.txt._textbox.get("1.0", "end").count("heads up")
+app._warn_display()
+app.update()
+check(app._state_title == "Set scaling to 100%",
+      f"150% scaling: card says {app._state_title!r}")
+check("150%" in app.lbl_detail.cget("text"), "the card names the current 150%")
+check(app.lbl_res.cget("text").startswith("150% scaling"),
+      f"header warns: {app.lbl_res.cget('text')!r}")
+check("Scaling isn't 100%" in app.feed._textbox.get("1.0", "1.end"),
+      "the feed says scaling isn't 100%")
+G.display_scaling = lambda: 100
+before = app.txt._textbox.get("1.0", "end").count("heads up")
+app._warn_display()
+app.update()
+check(app.txt._textbox.get("1.0", "end").count("heads up") == before,
+      "at 100% there is no heads-up at all")
+check(app.lbl_res.cget("text") == "1920×1080",
+      "at 100% the header goes back to plain 1920x1080")
+G.screen_size = lambda: (2560, 1440)
+G.display_scaling = lambda: 125
+app._warn_display()
+check("2560" in app.lbl_res.cget("text") and "125%" in app.lbl_res.cget("text"),
+      f"both wrong: header names both ({app.lbl_res.cget('text')!r})")
+
+# fixing scaling WHILE THE APP IS OPEN clears every warning by itself - even
+# during setup, where there is no Start button to press
+G.screen_size = lambda: (1920, 1080)
+G.display_scaling = lambda: 150
+app._recheck_display()
+app.update()
+check(bool(app._warn_box.winfo_manager()) and "150%" in app.lbl_warn.cget("text"),
+      "setup guide shows the scaling box at 150%")
+G.display_scaling = lambda: 100
+app._recheck_display()
+app.update()
+check(not app._warn_box.winfo_manager(),
+      "after switching to 100% the guide's box disappears on its own")
+check(app.lbl_res.cget("text") == "1920×1080",
+      "...and the header goes back to normal")
+check("Screen settings look right" in app.feed._textbox.get("1.0", "1.end"),
+      "...and the feed says the screen settings look right")
+before = app.txt._textbox.get("1.0", "end").count("screen check")
+app._recheck_display()
+check(app.txt._textbox.get("1.0", "end").count("screen check") == before,
+      "nothing changed = nothing logged (no spam every 5 seconds)")
+G.display_scaling, G.screen_size = real_scaling, real_size
+
 # a run stopped within a second must report ITS length, not the last run's
 import time                                                  # noqa: E402
 app.running, app.session_start = True, time.time() - 7200    # run A: 2h

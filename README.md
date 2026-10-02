@@ -37,12 +37,12 @@ It got me the wrap. I've left it running for 10+ hours straight, so now I'm shar
 - A **1920×1080** screen. Other sizes aren't supported yet, and the app tells you if yours
   is different. Bigger screens are planned for a future update.
 - Windows display scaling at **100%**. If yours is different, change it in Settings →
-  System → Display → **Scale** before using the macro.
+  System → Display → **Scale** before using the macro. The app warns you if it isn't.
 - Roblox Rivals, obviously
 
 ## Installing it
 
-1. Go to **[Releases](../../releases/latest)** and download `GlassMacro-v1.0.4.zip`.
+1. Go to **[Releases](../../releases/latest)** and download `GlassMacro-v1.0.5.zip`.
    Only get it from here, not from random re-uploads.
 2. Right-click the zip → **Extract All**. Don't run it from inside the zip.
 3. Open the folder and run **`GlassMacro.exe`**.
