@@ -42,7 +42,7 @@ It got me the wrap. I've left it running for 10+ hours straight, so now I'm shar
 
 ## Installing it
 
-1. Go to **[Releases](../../releases/latest)** and download `GlassMacro-v1.0.7.zip`.
+1. Go to **[Releases](../../releases/latest)** and download `GlassMacro-v1.0.8.zip`.
    Only get it from here, not from random re-uploads.
 2. Right-click the zip → **Extract All**. Don't run it from inside the zip.
 3. Open the folder and run **`GlassMacro.exe`**.
