@@ -28,6 +28,8 @@ It got me the wrap. I've left it running for 10+ hours straight, so now I'm shar
   - Stuck spectating? It presses Join.
   - Disconnected? It hits Reconnect, and if that doesn't work it restarts Roblox and rejoins.
 - **Keeps Roblox fullscreen.** If Roblox ends up in a window, it presses F11 for you.
+- **Recovers by itself.** If Roblox closes, crashes or gets stuck mid-run, it reopens Rivals
+  and gets back into a match. It also keeps your PC from going to sleep while it runs.
 - **Pauses when you tab out.** It only does anything while Rivals is the window in front, so
   you can still use your PC and it won't mess with anything.
 
@@ -42,7 +44,7 @@ It got me the wrap. I've left it running for 10+ hours straight, so now I'm shar
 
 ## Installing it
 
-1. Go to **[Releases](../../releases/latest)** and download `GlassMacro-v1.0.8.zip`.
+1. Go to **[Releases](../../releases/latest)** and download `GlassMacro-v1.0.9.zip`.
    Only get it from here, not from random re-uploads.
 2. Right-click the zip → **Extract All**. Don't run it from inside the zip.
 3. Open the folder and run **`GlassMacro.exe`**.

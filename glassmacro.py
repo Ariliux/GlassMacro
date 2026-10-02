@@ -34,7 +34,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import keyboard
 
-APP_NAME, APP_VER = "GlassMacro", "1.0.8"
+APP_NAME, APP_VER = "GlassMacro", "1.0.9"
 
 # Calibration lives in AppData, never beside the exe: a PyInstaller onefile
 # build unpacks to a temp folder that is deleted on exit, so anything saved
@@ -588,6 +588,69 @@ def roblox_running():
         return "RobloxPlayerBeta" in out
     except Exception:
         return False
+
+
+# Roblox gone for this long in the middle of a run = it closed or crashed.
+# Without this the macro sat on "Paused" forever - fatal for an overnight run.
+ROBLOX_GONE_AFTER = 45.0
+ROBLOX_REOPENS_PER_HOUR = 3       # never a crash-and-relaunch loop
+# Running with no window this long = stuck (crash box, never-exited client).
+ROBLOX_STUCK_AFTER = 90.0
+
+
+def keep_awake(on):
+    """While a run is going, stop Windows going to sleep - a sleeping PC ends
+    an AFK session for good. Only the PC; the screen may still turn off.
+    Per thread, so call it from the Tk thread."""
+    try:
+        flags = 0x80000000 | (0x00000001 if on else 0)  # CONTINUOUS | SYSTEM
+        return bool(ctypes.windll.kernel32.SetThreadExecutionState(flags))
+    except Exception:
+        return False
+
+
+LOG_KEEP_BYTES = 5 * 1024 * 1024
+
+
+def rotate_log(path=None, limit=LOG_KEEP_BYTES):
+    """At start-up, a log over `limit` becomes log.old.txt (replacing the
+    previous one) - day-long runs grew it without end. True if rotated."""
+    path = path or LOG_PATH
+    try:
+        if os.path.getsize(path) > limit:
+            os.replace(path, os.path.splitext(path)[0] + ".old.txt")
+            return True
+    except OSError:
+        pass
+    return False
+
+
+SINGLE_INSTANCE_MUTEX = "Local\\GlassMacro.SingleInstance"
+
+
+def claim_single_instance():
+    """True if no other GlassMacro is running. Two copies would both press
+    keys and click in the same game; a second start just brings the open
+    one to the front instead."""
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.restype = wintypes.HANDLE
+    k32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL,
+                                 wintypes.LPCWSTR]
+    handle = k32.CreateMutexW(None, False, SINGLE_INSTANCE_MUTEX)
+    # 183 = already exists. 5 = access denied, which is what a normal copy
+    # gets when the first one was started with "Run as administrator".
+    if ctypes.get_last_error() in (183, 5) or not handle:
+        try:
+            u = ctypes.windll.user32
+            h = u.FindWindowW("TkTopLevel", APP_NAME) or 0
+            if h:
+                u.ShowWindow(h, 9)                  # SW_RESTORE
+                u.SetForegroundWindow(h)
+        except Exception:
+            pass
+        return False
+    globals()["_instance_mutex"] = handle        # held until the app exits
+    return True
 
 
 def relaunch_roblox(place_id, log=None):
@@ -2695,6 +2758,7 @@ class GlassMacro(ctk.CTk):
             elif self._was_running:
                 # stopped - by F8, by Stop, or the worker ending on an error
                 self._was_running = False
+                keep_awake(False)
                 if getattr(self, "_update_yes_pending", False):
                     self._update_yes_pending = False
                     self.after(1500, self._start_update)
@@ -2725,6 +2789,10 @@ class GlassMacro(ctk.CTk):
     STATUS_RULES = (
         ("stopped on an error", "Stopped on an error",
          "The full log says what happened.", "RED", None),
+        ("Roblox closed - reopening Rivals", "Reopening Rivals",
+         "Roblox closed, so it's starting Rivals again.", "AMBER", None),
+        ("Roblox keeps closing", "Roblox keeps closing",
+         "It won't reopen it again this hour.", "RED", None),
         ("just playing", "In a match", "Picked up where you were.",
          "GREEN", None),
         ("choosing loadout", "Picking a loadout",
@@ -2801,6 +2869,10 @@ class GlassMacro(ctk.CTk):
     FEED_RULES = (
         ("stopped on an error", "err", "×", "RED",
          "Stopped on an error", "see Full log"),
+        ("Roblox closed - reopening Rivals", "reopen", "!", "AMBER",
+         "Reopened Rivals", "Roblox had closed"),
+        ("Roblox keeps closing", "reopenstop", "×", "RED",
+         "Roblox keeps closing", "not reopening it again this hour"),
         ("just playing", "resume", "▶", "SUBTLE", "Already in a match",
          "picking up from here"),
         ("in the hub - joining", "hub", "➜", "ACCENT",
@@ -3328,6 +3400,54 @@ class GlassMacro(ctk.CTk):
             text="Taught on this PC" if taught else "Built in",
             text_color=TEXT)
 
+    # ---- Roblox closed or crashed. Worker thread only.
+    def _roblox_closed_check(self, log):
+        """If Roblox has been gone for ROBLOX_GONE_AFTER mid-run, reopen
+        Rivals and walk back into Free For All. True if it reopened it.
+        Alt-tabbing away is not "gone" - the window still exists then."""
+        now = time.time()
+        if roblox_hwnd():
+            self._roblox_gone_since = 0.0
+            self._roblox_windowless_since = 0.0
+            return False
+        if not self.sw_reconnect.get():
+            return False
+        if not getattr(self, "_roblox_gone_since", 0.0):
+            self._roblox_gone_since = now
+            return False
+        if now - self._roblox_gone_since < ROBLOX_GONE_AFTER:
+            return False
+        if roblox_running():
+            # Starting up shows the "Roblox" window within seconds. Running
+            # with NO window for longer than that is stuck - a crash box, or
+            # a client that closed but never exited (a common Roblox bug) -
+            # and waiting on it would sit "Paused" all night.
+            if not getattr(self, "_roblox_windowless_since", 0.0):
+                self._roblox_windowless_since = self._roblox_gone_since
+            if now - self._roblox_windowless_since < ROBLOX_STUCK_AFTER:
+                self._roblox_gone_since = now
+                return False
+            log("Roblox is running with no window - restarting it")
+        recent = [t for t in getattr(self, "_reopens", []) if now - t < 3600]
+        if len(recent) >= ROBLOX_REOPENS_PER_HOUR:
+            if not getattr(self, "_reopen_gave_up", False):
+                self._reopen_gave_up = True
+                log("Roblox keeps closing - not reopening it again this hour")
+            return False
+        self._reopens = recent + [now]
+        self._reopen_gave_up = False
+        self._roblox_gone_since = 0.0
+        self._roblox_windowless_since = 0.0
+        log("Roblox closed - reopening Rivals")
+        relaunch_roblox(self.place_id(), lambda m: log("  " + m))
+        for _ in range(int(RELAUNCH_WAIT * 2)):
+            if not self.running:
+                return True
+            time.sleep(0.5)
+        if self.running and focused():
+            self.rejoin_ffa(log)
+        return True
+
     # ---- fullscreen. Worker thread only, like everything that sends input.
     def _fresh_fs(self):
         return {"hwnd": 0, "since": 0.0, "tries": 0, "pressed": False,
@@ -3551,6 +3671,7 @@ class GlassMacro(ctk.CTk):
         self._fs = self._fresh_fs()
         self._warn_display()
         self.running = True
+        keep_awake(True)
         self._paint_run()
         self.session_start = time.time()
         self.n_picks = self.n_joins = 0
@@ -3597,6 +3718,12 @@ class GlassMacro(ctk.CTk):
                     "just playing"))
         while self.running:
             if not focused():
+                if self._roblox_closed_check(wlog):
+                    picked_at = 0.0
+                    fails = 0
+                    warned = False
+                    last_known = time.time()
+                    continue
                 if not warned:
                     self._ui(lambda: self.log(
                         "PAUSED - Roblox is not the focused window"))
@@ -3907,5 +4034,6 @@ class GlassMacro(ctk.CTk):
 if __name__ == "__main__":
     if len(sys.argv) >= 5 and sys.argv[1] == "--finish-update":
         finish_update(sys.argv[2], sys.argv[3], sys.argv[4])
-    else:
+    elif claim_single_instance():
+        rotate_log()
         GlassMacro().mainloop()
