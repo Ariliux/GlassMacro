@@ -18,6 +18,7 @@ import json
 import os
 import io
 import queue
+import re
 import shutil
 import sys
 import subprocess
@@ -33,7 +34,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import keyboard
 
-APP_NAME, APP_VER = "GlassMacro", "1.0.3"
+APP_NAME, APP_VER = "GlassMacro", "1.0.4"
 
 # Calibration lives in AppData, never beside the exe: a PyInstaller onefile
 # build unpacks to a temp folder that is deleted on exit, so anything saved
@@ -801,6 +802,70 @@ def draw_gem(canvas, x, y, size, dim=False):
                               fill=colour, outline="")
 
 
+
+# ------------------------------------------------------------- updates ---
+# One read-only request to GitHub's public API: "what is the newest release?".
+# It sends nothing about the user beyond what any web request carries, and it
+# can be switched off in Settings. Everything else in the app stays offline.
+REPO = "Ariliux/GlassMacro"
+RELEASES_URL = f"https://github.com/{REPO}/releases/latest"
+LATEST_API = f"https://api.github.com/repos/{REPO}/releases/latest"
+UPDATE_EVERY = 12 * 3600       # runs last for days, so check again now and then
+SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
+
+
+def version_tuple(v):
+    """'v1.0.3' -> (1, 0, 3); anything without a number -> ().
+
+    Only the first three numbers count, so a tag like 'v1.0.4-x64' can't look
+    newer than 1.0.4 itself."""
+    return tuple(int(n) for n in re.findall(r"\d+", str(v))[:3])
+
+
+def latest_release(timeout=6.0):
+    """(version, page url) of the newest published release, or None.
+
+    Never raises - no network, a GitHub outage or a rate limit all just mean
+    "no news", and the app carries on exactly as before.
+    """
+    import urllib.request
+    req = urllib.request.Request(LATEST_API, headers={
+        "Accept": "application/vnd.github+json",
+        "User-Agent": f"{APP_NAME}/{APP_VER}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        tag = str(data.get("tag_name") or "")
+        if data.get("draft") or data.get("prerelease") or not version_tuple(tag):
+            return None
+        url = str(data.get("html_url") or "")
+        if not url.startswith(f"https://github.com/{REPO}/"):
+            url = RELEASES_URL           # only ever open our own release page
+        return tag.lstrip("vV"), url
+    except Exception:
+        return None
+
+
+def load_settings():
+    try:
+        with open(SETTINGS_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_settings(data):
+    """Write settings.json in one piece: a half-written file can't happen."""
+    try:
+        tmp = SETTINGS_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+        os.replace(tmp, SETTINGS_PATH)
+    except Exception:
+        pass
+
+
 class GlassButton(ctk.CTkFrame):
     """The big Start / Stop button: a glyph, a word and an F8 keycap.
 
@@ -922,6 +987,7 @@ class GlassMacro(ctk.CTk):
         self._fs = self._fresh_fs()
 
         self.cal, self.tile = load_cal()
+        self.settings = load_settings()
         self.running = False
         self.watching = False
         self.calibrating = False
@@ -929,6 +995,7 @@ class GlassMacro(ctk.CTk):
 
         self._build()
         self._drain()
+        threading.Thread(target=self._update_worker, daemon=True).start()
         keyboard.add_hotkey("f8", self._hotkey)
         self.log(f"--- {APP_NAME} v{APP_VER} opened ---")
         sw, sh = screen_size()
@@ -1097,12 +1164,18 @@ class GlassMacro(ctk.CTk):
         ctk.CTkLabel(head, text=APP_VER, text_color=MUTED,
                      font=self.F(11)).pack(side="left", padx=(6, 0),
                                            pady=(3, 0))
-        ctk.CTkLabel(
+        self.lbl_res = ctk.CTkLabel(
             head, font=self.F(11),
             text=("1920×1080" if self._screen_ok
                   else f"{sw}×{sh} · made for 1920×1080"),
             text_color=MUTED if self._screen_ok else AMBER,
-        ).pack(side="right")
+        )
+        self.lbl_res.pack(side="right")
+        self.lnk_update = ctk.CTkLabel(head, text="", text_color=ACCENT,
+                                       font=self.F(11, semi=True),
+                                       cursor="hand2")
+        self._update_url = RELEASES_URL
+        self.lnk_update.bind("<Button-1>", lambda _e: self._open_update())
 
         self.main = ctk.CTkFrame(self, fg_color="transparent")
         self.main.pack(fill="both", expand=True, padx=20, pady=(0, 16))
@@ -1555,6 +1628,15 @@ class GlassMacro(ctk.CTk):
             card, "Save screenshots",
             "Newest 40 of each, handy if a pick misses.")
 
+        self._group(sp, "UPDATES")
+        card = self._card(sp, corner_radius=14)
+        card.pack(fill="x")
+        self.sw_update = self._switch_row(
+            card, "Check for updates",
+            "Asks GitHub if there's a newer version. Nothing about you is sent.",
+            first=True, on=self.settings.get("check_updates", True),
+            command=self._update_switched)
+
         self._group(sp, "DETECTION")
         card = self._card(sp, corner_radius=14)
         card.pack(fill="x")
@@ -1652,7 +1734,8 @@ class GlassMacro(ctk.CTk):
                              border_color=LINE, text_color=TEXT,
                              font=self.F(12), command=command)
 
-    def _switch_row(self, card, title, note, first=False):
+    def _switch_row(self, card, title, note, first=False, on=True,
+                    command=None):
         if not first:
             ctk.CTkFrame(card, height=1, fg_color=HAIRLINE,
                          corner_radius=0).pack(fill="x", padx=1)
@@ -1661,9 +1744,12 @@ class GlassMacro(ctk.CTk):
         sw = ctk.CTkSwitch(row, text="", width=40, switch_width=34,
                            switch_height=18, progress_color=ACCENT,
                            fg_color=LINE, button_color=TEXT,
-                           button_hover_color=ACCENT_SOFT)
+                           button_hover_color=ACCENT_SOFT, command=command)
         sw.pack(side="right")
-        sw.select()
+        if on:
+            sw.select()
+        else:
+            sw.deselect()
         txt = ctk.CTkFrame(row, fg_color="transparent")
         txt.pack(side="left", fill="x", expand=True)
         ctk.CTkLabel(txt, text=title, text_color=TEXT, font=self.F(13),
@@ -1688,6 +1774,47 @@ class GlassMacro(ctk.CTk):
             self.sld_thresh.set(max(0.60, min(0.95, v)))
         finally:
             self._slider_guard = False
+
+    # ---- updates ----
+    def _update_switched(self):
+        self.settings["check_updates"] = bool(self.sw_update.get())
+        save_settings(self.settings)
+
+    def _update_worker(self):
+        """Background thread: ask GitHub now and every UPDATE_EVERY seconds.
+        Only touches the UI through _ui()."""
+        time.sleep(4)                     # let the window settle first
+        while not self._check_updates_once():
+            time.sleep(UPDATE_EVERY)
+
+    def _check_updates_once(self):
+        """True once a newer release has been found and shown."""
+        if not self.settings.get("check_updates", True):
+            return False
+        found = latest_release()
+        if found and version_tuple(found[0]) > version_tuple(APP_VER):
+            self._ui(lambda f=found: self._show_update(*f))
+            return True                   # one notice is enough
+        # one quiet line in Full log / log.txt, so "did it even check?" has
+        # an answer - the feed ignores it
+        note = (f"update check: up to date (latest on GitHub is {found[0]})"
+                if found
+                else "update check: couldn't reach GitHub - will try later")
+        self._ui(lambda n=note: self.log(n))
+        return False
+
+    def _show_update(self, version, url):
+        self._update_url = url
+        self.lnk_update.configure(text=f"Update {version} available ›")
+        self.lbl_res.pack_forget()
+        self.lnk_update.pack(side="right")
+        self.log(f"update available: GlassMacro {version}")
+
+    def _open_update(self):
+        try:
+            os.startfile(self._update_url)
+        except Exception as exc:
+            self.log(f"could not open the release page: {exc}")
 
     def open_data(self):
         try:
@@ -1929,6 +2056,8 @@ class GlassMacro(ctk.CTk):
          "Screen isn't 1920×1080", "clicks may miss"),
         ("NOTE: those two points are almost", "needsetup", "!", "AMBER",
          "Setup needs redoing", "the same spot was hovered twice"),
+        ("update available:", "update", "↑", "ACCENT",
+         "Update available", "the link is at the top"),
         ("calibration saved", "setup", "✓", "GREEN", "Weapons set up",
          ""),
         ("saved the way back", "way", "✓", "GREEN", "Way back saved",

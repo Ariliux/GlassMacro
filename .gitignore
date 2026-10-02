@@ -14,3 +14,6 @@ ANTIVIRUS_PLAN.md
 
 # real screenshots used by test_detectors.py - they show other players' names
 test_screens/
+
+# the clean build environment
+.venv-build/

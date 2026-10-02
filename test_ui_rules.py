@@ -19,6 +19,7 @@ sys.path.insert(0, HERE)
 import keyboard                                              # noqa: E402
 keyboard.add_hotkey = lambda *a, **k: None                   # never arm F8
 import glassmacro as G                                       # noqa: E402
+G.latest_release = lambda *a, **k: None   # tests never touch the network
 
 assert G.DATA_DIR.startswith(os.environ["LOCALAPPDATA"]), G.DATA_DIR
 

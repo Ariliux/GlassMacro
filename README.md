@@ -35,12 +35,14 @@ It got me the wrap. I've left it running for 10+ hours straight, so now I'm shar
 
 - Windows 10 or 11
 - A **1920×1080** screen. Other sizes aren't supported yet, and the app tells you if yours
-  is different.
+  is different. Bigger screens are planned for a future update.
+- Windows display scaling at **100%**. If yours is different, change it in Settings →
+  System → Display → **Scale** before using the macro.
 - Roblox Rivals, obviously
 
 ## Installing it
 
-1. Go to **[Releases](../../releases/latest)** and download `GlassMacro-v1.0.3.zip`.
+1. Go to **[Releases](../../releases/latest)** and download `GlassMacro-v1.0.4.zip`.
    Only get it from here, not from random re-uploads.
 2. Right-click the zip → **Extract All**. Don't run it from inside the zip.
 3. Open the folder and run **`GlassMacro.exe`**.
@@ -118,7 +120,9 @@ nothing you download ever should.
   - It listens for F8 to start and stop, plus Esc during setup. It doesn't record anything
     else you type.
   - The only program it ever closes or reopens is Roblox.
-  - Nothing gets sent anywhere. The pictures it saves stay in your data folder.
+  - The only thing it ever contacts is GitHub, to check whether there's a newer
+    version. Nothing about you or your game is sent, and you can turn it off in
+    Settings → **Check for updates**. The pictures it saves stay in your data folder.
 
 ## Found a bug?
 
