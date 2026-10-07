@@ -54,6 +54,7 @@ G.WarningPopup = type("P", (), {"last": 0.0, "open": False,
                                 "show": lambda *a, **k: "ok"})
 G.latest_release = lambda *a, **k: None
 G.release_info = lambda *a, **k: None     # the background update check stays offline
+G.ask_to_update = lambda *a, **k: None    # never open the real update dialog
 app = G.GlassMacro()
 app.withdraw()
 app.update()

@@ -22,6 +22,7 @@ keyboard.add_hotkey = lambda *a, **k: None                   # never arm F8
 import glassmacro as G                                       # noqa: E402
 G.latest_release = lambda *a, **k: None   # tests never touch the network
 G.release_info = lambda *a, **k: None     # ...nor does the background update check
+G.ask_to_update = lambda *a, **k: None    # never open the real update dialog
 
 assert G.DATA_DIR.startswith(os.environ["LOCALAPPDATA"]), G.DATA_DIR
 

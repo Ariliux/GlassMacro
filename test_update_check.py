@@ -37,6 +37,9 @@ class _FakeNotifier:
 
 
 G.WarningPopup = _FakeNotifier
+G.ask_to_update = lambda *a, **k: None        # never open the real update dialog
+G.play_foreground_sound = lambda: None        # ...or play its sound
+G.os.startfile = lambda *a, **k: None         # never open a browser/release page
 
 fails = 0
 
