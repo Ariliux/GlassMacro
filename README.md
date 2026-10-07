@@ -78,7 +78,7 @@ weapons and the grid moves, hit **Redo setup** and do the same three hovers.
 - You can start it from anywhere: the hub, mid-match or spectating. It figures out where
   you are.
 - The pages are down the left side. Make the window narrow and the sidebar folds into a
-  row of icons (**Ctrl+B** switches it by hand).
+  strip of icons (**Ctrl+B** switches it by hand).
 - **Home** shows what it's doing right now. The dot pulses while it's working: green while
   it's playing, amber when it's paused or reconnecting. The pill at the top says the same
   thing on every page.
@@ -124,8 +124,8 @@ You pick which alerts it sends:
 - recoveries (reopened, restarted or reconnected) and installed updates, both off at first
 
 Each alert is a short message: what happened (for an error, the error line from the log),
-the run's playtime, loadouts and rejoins, your lifetime playtime, the app version and the
-run number. If you add your Discord user ID it can **@ you**, but only for errors, being
+with some of: the run's playtime, loadouts and rejoins, and your lifetime playtime. The
+footer has the app version and the run number. If you add your Discord user ID it can **@ you**, but only for errors, being
 stuck or a long pause. Nothing else is sent: no screenshots, no PC name, no user name and
 no file paths. Apart from **Send test**, alerts only go out during a run you started.
 

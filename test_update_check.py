@@ -14,6 +14,8 @@ import urllib.request
 
 os.environ["LOCALAPPDATA"] = tempfile.mkdtemp(prefix="glass_upd_")
 os.environ["GLASSMACRO_NO_SEND"] = "1"                         # never post to Discord
+import tests_guard                                           # noqa: E402
+tests_guard.start()                     # never let a test window keep the keyboard
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import keyboard                                              # noqa: E402
