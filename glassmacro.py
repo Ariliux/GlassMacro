@@ -4896,33 +4896,10 @@ class GlassMacro(ctk.CTk):
                      text_color=AMBER, font=self.F(11), anchor="w",
                      height=16).pack(fill="x", pady=(10, 0))
 
-        self._group(sp, "SEND AN ALERT WHEN")
-        card = self._card(sp, corner_radius=14)
-        card.pack(fill="x")
-        ev = wh.get("events") if isinstance(wh.get("events"), dict) else {}
-        me = wh.get("mention") if isinstance(wh.get("mention"), dict) else {}
-        self.chk_hook, self.chk_mention = {}, {}
-        for i, (key, text, mention) in enumerate(self.HOOK_EVENTS):
-            if i:
-                ctk.CTkFrame(card, height=1, fg_color=HAIRLINE,
-                             corner_radius=0).pack(fill="x", padx=1)
-            row = ctk.CTkFrame(card, fg_color="transparent")
-            row.pack(fill="x", padx=14, pady=7)
-            chk = self._check(row, text, bool(ev.get(key)),
-                              self._hook_options_changed)
-            chk.pack(side="left")
-            self.chk_hook[key] = chk
-            if mention:
-                m = self._check(row, "@ me", bool(me.get(mention)),
-                                self._hook_options_changed, small=True)
-                m.pack(side="right")
-                self.chk_mention[mention] = m
-
-        self._group(sp, "MENTIONS")
-        card = self._card(sp, corner_radius=14)
-        card.pack(fill="x")
-        box = ctk.CTkFrame(card, fg_color="transparent")
-        box.pack(fill="x", padx=14, pady=12)
+        # Discord user ID lives with the link (owner's request) - no
+        # scrolling to the bottom to set who gets @mentioned.
+        ctk.CTkFrame(box, height=1, fg_color=HAIRLINE,
+                     corner_radius=0).pack(fill="x", pady=(12, 10))
         row = ctk.CTkFrame(box, fg_color="transparent")
         row.pack(fill="x")
         txt = ctk.CTkFrame(row, fg_color="transparent")
@@ -4952,6 +4929,28 @@ class GlassMacro(ctk.CTk):
         self.lbl_uid = ctk.CTkLabel(box, text="", text_color=MUTED,
                                     font=self.F(11), anchor="w", height=16)
         self.lbl_uid.pack(fill="x", pady=(6, 0))
+
+        self._group(sp, "SEND AN ALERT WHEN")
+        card = self._card(sp, corner_radius=14)
+        card.pack(fill="x")
+        ev = wh.get("events") if isinstance(wh.get("events"), dict) else {}
+        me = wh.get("mention") if isinstance(wh.get("mention"), dict) else {}
+        self.chk_hook, self.chk_mention = {}, {}
+        for i, (key, text, mention) in enumerate(self.HOOK_EVENTS):
+            if i:
+                ctk.CTkFrame(card, height=1, fg_color=HAIRLINE,
+                             corner_radius=0).pack(fill="x", padx=1)
+            row = ctk.CTkFrame(card, fg_color="transparent")
+            row.pack(fill="x", padx=14, pady=7)
+            chk = self._check(row, text, bool(ev.get(key)),
+                              self._hook_options_changed)
+            chk.pack(side="left")
+            self.chk_hook[key] = chk
+            if mention:
+                m = self._check(row, "@ me", bool(me.get(mention)),
+                                self._hook_options_changed, small=True)
+                m.pack(side="right")
+                self.chk_mention[mention] = m
 
         self._group(sp, "WHAT AN ALERT LOOKS LIKE")
         self._build_hook_preview(sp)
