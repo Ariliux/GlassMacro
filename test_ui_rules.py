@@ -66,10 +66,24 @@ def check(ok, what):
     print(("PASS  " if ok else "FAIL  ") + what)
 
 
+BODY_LINES = body.splitlines()
+
+
+def logged(needle):
+    """The needle sits inside a log( call (on its line or up to 2 lines
+    above) - UI labels that merely mention it don't count, so rewording the
+    real log line can't hide behind a checkbox or help text."""
+    for i, line in enumerate(BODY_LINES):
+        if needle in line and any("log(" in BODY_LINES[j]
+                                  for j in range(max(0, i - 2), i + 1)):
+            return True
+    return False
+
+
 for table in ("STATUS_RULES", "FEED_RULES", "EVENT_RULES"):
     for row in getattr(G.GlassMacro, table):
         needle = row[0]
-        found = needle in body or any(needle in r for r in RUNTIME)
+        found = logged(needle) or any(needle in r for r in RUNTIME)
         check(found, f"{table}: {needle!r} is still logged somewhere")
 
 # behaviour: real lines in, what does a person see?

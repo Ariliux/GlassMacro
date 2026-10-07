@@ -271,6 +271,15 @@ try:
           and lines == ["webhook: test message sent"],
           "Send test: one post, one line")
     ALL_LINES += lines
+
+    # Send test while rate-limited: the app hurries the sender (_hook_test),
+    # so a 429 gives up at once instead of sleeping up to 3 x 60 s
+    s, ft, sleeps, lines = sender([(429, b'{"retry_after": 30}'), 204])
+    s._hurry = True
+    check(s.post_now(G.build_payload([ev()["embed"]])) == "dropped"
+          and len(ft.calls) == 1 and not sleeps,
+          f"Send test on a 429: dropped at once, never sleeps ({sleeps})")
+    ALL_LINES += lines
 finally:
     os.environ["GLASSMACRO_NO_SEND"] = saved
 

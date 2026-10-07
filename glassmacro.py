@@ -1504,8 +1504,8 @@ class WebhookSender:
                 return "ok"
             if code == 429:
                 waits += 1
-                if waits > HOOK_429_WAITS:
-                    return "dropped"
+                if self._hurry or waits > HOOK_429_WAITS:
+                    return "dropped"          # Send test / close: never wait
                 self._sleep(self._retry + 0.25)
                 continue
             if code in (401, 403, 404):
@@ -3865,7 +3865,7 @@ class GlassMacro(ctk.CTk):
                                        else "")
             t["runs"].configure(text=str(v["runs"]))
             unclean = st.get("unclean_ends", 0)
-            t["runs"].sub.configure(text=f"{unclean} ended unexpectedly"
+            t["runs"].sub.configure(text=f"{unclean} cut short"
                                     if unclean else "")
             for k in ("loadouts", "rejoins", "recov"):
                 t[k].configure(text=f"{int(v[k]):,}")
@@ -3985,7 +3985,7 @@ class GlassMacro(ctk.CTk):
         ("start_stop", "Run starts and stops", None),
         ("hourly", "Every full hour of playtime", None),
         ("error", "Stopped by an error", "error"),
-        ("stuck", "Stuck: Roblox keeps closing, or can't get into a match",
+        ("stuck", "Stuck: Roblox won't stay open, or can't get into a match",
          "stuck"),
         ("paused", "Paused for 10 minutes or more", "paused"),
         ("recover", "Recoveries: reopened, restarted or reconnected", None),
@@ -4501,6 +4501,11 @@ class GlassMacro(ctk.CTk):
         """'Check now' on About: one check, on its own thread, only ever
         from this click."""
         if getattr(self, "_checking", False):
+            return
+        info = getattr(self, "_update_info", None)
+        if info:                  # already found: don't announce it twice
+            self._paint_upd(f"Update {info.get('version', '')} is out · the "
+                            f"link is bottom-left", ACCENT)
             return
         if not self.settings.get("check_updates", True):
             self._paint_upd("Turn on Check for updates first.", AMBER)
