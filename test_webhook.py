@@ -91,6 +91,11 @@ s = G.scrub(f"failed {URL} and {TOKEN} in C:\\Users\\someone\\x.png "
 check(TOKEN not in s and HOOK_ID not in s and "C:\\" not in s
       and len(s) <= 300,
       "scrub removes the token, the link and paths, and caps at 300")
+check(G.scrub("see https://github.com/x") == "see https://github.com/x",
+      "scrub leaves an ordinary URL alone (the 's://' is not a drive)")
+check(G.scrub("in C:\\Users\\someone\\x.png") == "in [path]"
+      and G.scrub("(D:/games/x.png)").startswith("([path]"),
+      "...but drive paths still become [path]")
 
 # ---- the message -----------------------------------------------------------
 e = G.build_embed("start", "Run started", "x", None, [("Lifetime", "2h")],
@@ -420,6 +425,37 @@ check(out == ["ok"] and len(p) == 1 and len(p[0]["embeds"]) == 6
       "they go out as one batched POST (fake transport)")
 check(not NET, "still 0 real network calls")
 gate.set()
+
+# Roblox closed while paused, then got reopened: no "resuming" line comes,
+# so the reopen must clear the pause clock (no false 10-minute alert later)
+gate2 = threading.Event()
+app._worker = threading.Thread(target=gate2.wait, daemon=True)
+app._worker.start()
+s3, _, _, _ = sender([204] * 5)
+app._sender = s3
+app.n_picks = app.n_joins = 0
+app.running, app.session_start = True, time.time()
+app._run_started()
+app.log("PAUSED - Roblox is not the focused window")
+check(app._paused_since is not None, "PAUSED starts the pause clock")
+app.log("Roblox closed - reopening Rivals")
+if app._paused_since is not None:
+    app._paused_since = time.time() - 601
+app._live_tick(time.time())
+t3 = [e["embed"]["title"] for _, e in list(s3._q.queue)]
+check("Paused for 10 minutes" not in t3 and app._paused_since is None
+      and app._paused_sent is False,
+      f"a reopen clears the pause - no false 10-minute alert ({t3})")
+app.log("PAUSED - Roblox is not the focused window")
+app._paused_since = time.time() - 601
+app._live_tick(time.time())
+t3 = [e["embed"]["title"] for _, e in list(s3._q.queue)]
+check(t3.count("Paused for 10 minutes") == 1,
+      f"...and a real pause after it still alerts once ({t3})")
+app.running = False
+app._run_ended(time.time(), ran=5)
+gate2.set()
+check(not NET, "still 0 real network calls after the reopen run")
 
 # after the run: alerts are disarmed again
 s2, ft2, _, _ = sender([204])

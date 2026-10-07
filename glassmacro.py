@@ -1277,7 +1277,7 @@ def scrub(text, url=None):
     if parts:
         s = s.replace(parts[1], "••••")
     s = re.sub(r"https?://\S*webhooks/\S+", "[webhook link]", s)
-    s = re.sub(r"[A-Za-z]:[\\/][^\s'\"<>|]*", "[path]", s)
+    s = re.sub(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/][^\s'\"<>|]*", "[path]", s)
     s = re.sub(r"\\\\[^\s'\"<>|]+", "[path]", s)
     for name in {os.environ.get("USERNAME"), os.environ.get("COMPUTERNAME")}:
         if name and len(name) >= 3:
@@ -3634,6 +3634,10 @@ class GlassMacro(ctk.CTk):
         if key == "resumed":
             self._paused_since, self._paused_sent = None, False
             return
+        if key in ("reopen", "restart"):
+            # Roblox came back without a "resuming" line; if it isn't in
+            # front the worker logs PAUSED again and the clock restarts
+            self._paused_since, self._paused_sent = None, False
         wh = self.settings.get("webhook")
         detail = scrub(text, wh.get("url") if isinstance(wh, dict) else None)
         if key == "updated":
@@ -4477,6 +4481,13 @@ class GlassMacro(ctk.CTk):
             return
         if self.watching:
             self.toggle_watch()
+        if getattr(self, "_live_run", False):
+            # restarted before _tick saw the last run end: close it while
+            # its loadouts/rejoins are still counted
+            try:
+                self._run_ended(time.time())
+            except Exception:
+                pass
         self._fs = self._fresh_fs()
         self._warn_display()
         self.running = True
