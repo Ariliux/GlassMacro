@@ -325,6 +325,42 @@ app.settings["remember"] = False
 check(app._saved_window(1.0) is None, "Remember off: never reused")
 app.settings.pop("window")
 app.settings["remember"] = True
+
+# Ctrl+T in a text box toggles the pin - and does NOT also swap the last
+# two characters (Tk's Entry class binding: 0.82 would become 0.28)
+# A key event only reaches a window that has keyboard focus, and the test
+# window must never take focus - so this walks the entry's bindtags the way
+# Tk dispatches a key press (widget, Entry class, root, all; a "break"
+# stops the rest), running the real bound scripts.
+app.tk.eval(r"""
+proc ::gm_key {w seq} {
+    set subs [list %W $w %K t %A ?? %N 116 %# 0 %b ?? %f ?? %h ?? %k 84 \
+                   %s 4 %t 0 %T 2 %w ?? %x 0 %y 0 %X 0 %Y 0 %D ?? %E 0 %d ??]
+    foreach tag [bindtags $w] {
+        set s [bind $tag $seq]
+        if {$s eq ""} continue
+        set code [catch {uplevel #0 [string map $subs $s]} msg]
+        if {$code == 3} return
+        if {$code == 1} { error $msg }
+    }
+}
+""")
+pins = []
+app._toggle_pin = lambda: pins.append(1)       # count, don't touch topmost
+old_thresh = app.e_thresh.get()
+for ent in (app.e_thresh, app.e_log, app.e_hook, app.e_uid):
+    ent.delete(0, "end")
+    ent.insert(0, "0.82")
+    ent._entry.icursor("end")
+    before = len(pins)
+    app.tk.call("::gm_key", str(ent._entry), "<Control-t>")
+    name = [k for k, v in vars(app).items() if v is ent][0]
+    check(len(pins) == before + 1 and ent.get() == "0.82",
+          f"Ctrl+T in {name}: pin toggled once, text kept "
+          f"({len(pins) - before} toggles, {ent.get()!r})")
+    ent.delete(0, "end")
+del app._toggle_pin
+app.e_thresh.insert(0, old_thresh)
 app.destroy()
 
 print(f"\n{'all passed' if not fails else f'{fails} FAILED'}")

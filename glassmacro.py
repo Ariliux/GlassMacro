@@ -3217,8 +3217,13 @@ class GlassMacro(ctk.CTk):
         for k in ("b", "B"):
             self.bind(f"<Control-{k}>", self._key_sidebar)
         self.bind("<Escape>", self._key_escape)
-
-    def _key_page(self, key):
+        # Tk's Entry class binds Ctrl+T to "swap the last two characters"
+        # and runs before the root binding, so a focused text box would
+        # turn 0.82 into 0.28. A binding on the entry itself runs first
+        # and its "break" stops both the class and the root binding.
+        for e in (self.e_log, self.e_thresh, self.e_hook, self.e_uid):
+            for k in ("t", "T"):
+                e._entry.bind(f"<Control-{k}>", self._key_pin)
         self._show_page(key)
         return "break"
 
@@ -6104,7 +6109,7 @@ class GlassMacro(ctk.CTk):
         ("update failed:", "updfail", "!", "AMBER", "Update didn't work",
          "nothing changed - try the download page"),
         ("update available:", "update", "\u2191", "ACCENT",
-         "Update available", "the link is bottom-left"),
+         "Update available", "open About to get it"),
         ("calibration saved", "setup", "✓", "GREEN", "Weapons set up",
          ""),
         ("saved the way back", "way", "✓", "GREEN", "Way back saved",
@@ -7614,6 +7619,14 @@ class GlassMacro(ctk.CTk):
                 save_cal(self.cal)
             except Exception:
                 pass
+        # a page / size / position change from the last second is still
+        # waiting on its timer: save it now (no-op when withdrawn/iconic)
+        if getattr(self, "_win_save", None):
+            try:
+                self.after_cancel(self._win_save)
+            except Exception:
+                pass
+            self._save_window()
         self.destroy()
 
 
