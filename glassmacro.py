@@ -35,7 +35,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import keyboard
 
-APP_NAME, APP_VER = "GlassMacro", "1.0.9"
+APP_NAME, APP_VER = "GlassMacro", "1.1.0"
 
 # Calibration lives in AppData, never beside the exe: a PyInstaller onefile
 # build unpacks to a temp folder that is deleted on exit, so anything saved
@@ -5004,7 +5004,8 @@ class GlassMacro(ctk.CTk):
             e.configure(show="")
             e.insert(0, mask_hook(saved))
             e.configure(state="disabled", text_color=SUBTLE)
-            self.btn_hook_a.configure(text="Change", command=self._hook_change)
+            self.btn_hook_a.configure(text="Change", command=self._hook_change,
+                                      state="normal")
             self.btn_hook_b.configure(text="Remove", command=self._hook_remove)
             self.btn_eye.pack_forget()
             self.lbl_hook.configure(text="Saved. Send test to check it "
@@ -5027,6 +5028,7 @@ class GlassMacro(ctk.CTk):
                 self.sw_hook.configure(state="disabled")
             self._hook_validate()
         self.btn_hook_test.configure(state="normal" if saved else "disabled")
+        self._paint_hook_note()
         self._paint_badges()
 
     def _hook_validate(self):
@@ -5103,7 +5105,19 @@ class GlassMacro(ctk.CTk):
         save_settings(self.settings)
         if not on:
             self.sw_hook.deselect()
+        self._paint_hook_note()
         self._paint_badges()
+
+    def _paint_hook_note(self):
+        """The line under 'Send alerts to Discord' says where things stand."""
+        wh = self._hook_settings()
+        if not normalize_hook(wh.get("url")):
+            text = "Off until a webhook link is saved below."
+        elif wh.get("enabled") is True:
+            text = "On · alerts go to the channel below during a run."
+        else:
+            text = "Link saved · switch this on to send alerts."
+        self.sw_hook.note.configure(text=text)
 
     def _hook_options_changed(self):
         wh = self._hook_settings()
@@ -5382,8 +5396,9 @@ class GlassMacro(ctk.CTk):
         txt.pack(side="left", fill="x", expand=True)
         ctk.CTkLabel(txt, text=title, text_color=TEXT, font=self.F(13),
                      anchor="w", height=18).pack(fill="x")
-        ctk.CTkLabel(txt, text=note, text_color=SUBTLE, font=self.F(11),
-                     anchor="w", height=16).pack(fill="x")
+        sw.note = ctk.CTkLabel(txt, text=note, text_color=SUBTLE,
+                               font=self.F(11), anchor="w", height=16)
+        sw.note.pack(fill="x")
         return sw
 
     def _slider_to_entry(self, value):

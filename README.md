@@ -44,7 +44,7 @@ It got me the wrap. I've left it running for 10+ hours straight, so now I'm shar
 
 ## Installing it
 
-1. Go to **[Releases](../../releases/latest)** and download `GlassMacro-v1.0.9.zip`.
+1. Go to **[Releases](../../releases/latest)** and download `GlassMacro-v1.1.0.zip`.
    Only get it from here, not from random re-uploads.
 2. Right-click the zip → **Extract All**. Don't run it from inside the zip.
 3. Open the folder and run **`GlassMacro.exe`**.
@@ -73,24 +73,65 @@ weapons and the grid moves, hit **Redo setup** and do the same three hovers.
 
 ## Using it
 
-- Press **Start**, or **F8** while you're in Rivals. **F8** again stops it.
+- Press **Start** at the top of the window, or **F8** while you're in Rivals. **F8** again
+  stops it.
 - You can start it from anywhere: the hub, mid-match or spectating. It figures out where
   you are.
-- The top card shows what it's doing right now. The dot pulses while it's working: green
-  while it's playing, amber when it's paused or reconnecting.
-- **Playtime** is the big number. It also shows how many loadouts it's picked and how many
-  times it's rejoined, and it keeps your last run on screen after you stop.
-- **It updates itself.** When a new version is out, it asks *"v1.0.8 is available. Do you
+- The pages are down the left side. Make the window narrow and the sidebar folds into a
+  row of icons (**Ctrl+B** switches it by hand).
+- **Home** shows what it's doing right now. The dot pulses while it's working: green while
+  it's playing, amber when it's paused or reconnecting. The pill at the top says the same
+  thing on every page.
+- **Playtime** is the big number. It also shows how many loadouts it's picked, how many
+  times it's rejoined or recovered, and your playtime today. Your last run stays on screen
+  after you stop.
+- **Stats** keeps your lifetime totals: playtime, runs, your longest run, loadouts,
+  rejoins and a chart of the last 14 days.
+- **Activity** lists what happened in plain English, newest first, and can be filtered to
+  just loadouts or problems. **Log** has every detail, which helps with bug reports.
+- **It updates itself.** When a new version is out, it asks *"v1.1.1 is available. Do you
   want to update?"* Click **Yes** and it downloads the update, closes, updates and opens
-  again. Your weapon setup and settings stay. It never asks in the middle of a run.
-- **Activity** lists what happened in plain English, newest first. **Full log** has every
-  detail, which helps with bug reports.
+  again. Your weapon setup, settings and stats stay. It never asks in the middle of a run.
 
-In **Settings** you can:
-- turn off **Keep Roblox fullscreen**, **Reconnect automatically** or **Save screenshots**
-- run a **Live test** of the detection. Leave **Match sensitivity** at 0.82 unless picks
-  get skipped.
-- open the data folder, which has the log and the pictures it saves
+The other pages:
+- **Weapons**: the setup, **Redo setup**, and a **Live test** of the detection. Leave
+  **Match sensitivity** at 0.82 unless picks get skipped.
+- **Way back**: how it gets back into Free For All. It's built in, and you can teach it
+  your own way if the menu ever changes.
+- **Discord**: optional alerts, see below.
+- **Settings**: turn off **Keep Roblox fullscreen**, **Reconnect automatically** or
+  **Save screenshots** (they're remembered now), and open the data folder, which has the
+  log and the pictures it saves.
+- **About**: the version, **Check for updates**, and every keyboard shortcut.
+
+## Discord alerts
+
+GlassMacro can post to a Discord channel of yours, so you can check on a long run from
+your phone. It's **off** until you set it up, and it only ever posts to the one link you
+give it.
+
+1. In Discord, open the channel's settings → **Integrations** → **Webhooks** →
+   **New Webhook** → **Copy Webhook URL**.
+2. In GlassMacro, open the **Discord** page, press **Paste**, then **Save**.
+3. Turn on **Send alerts to Discord** and press **Send test** to check it arrives.
+
+You pick which alerts it sends:
+- a run starts or stops
+- every full hour of playtime
+- it stopped because of an error
+- it's stuck: Roblox keeps closing, or it can't get into a match
+- it's been paused for 10 minutes or more
+- recoveries (reopened, restarted or reconnected) and installed updates, both off at first
+
+Each alert is a short message: what happened (for an error, the error line from the log),
+the run's playtime, loadouts and rejoins, your lifetime playtime, the app version and the
+run number. If you add your Discord user ID it can **@ you**, but only for errors, being
+stuck or a long pause. Nothing else is sent: no screenshots, no PC name, no user name and
+no file paths. Apart from **Send test**, alerts only go out during a run you started.
+
+Anyone who has your webhook link can post in that channel, so keep it to yourself. The app
+shows it masked once it's saved. It's stored in `settings.json` in your data folder, so
+don't share that file.
 
 ## If Windows or your antivirus warns you
 
@@ -125,11 +166,15 @@ nothing you download ever should.
   - It listens for F8 to start and stop, plus Esc during setup. It doesn't record anything
     else you type.
   - The only program it ever closes or reopens is Roblox.
-  - The only thing it ever contacts is GitHub: to check whether there's a newer
-    version, and, if you click Yes, to download it. It only installs updates from this
-    repo's releases, and only if the download's fingerprint matches what GitHub lists.
-    Nothing about you or your game is sent, and you can turn update checks off in
-    Settings → **Check for updates**. The pictures it saves stay in your data folder.
+  - It only ever contacts two places:
+    - **GitHub**, to check whether there's a newer version and, if you click Yes, to
+      download it. It only installs updates from this repo's releases, and only if the
+      download's fingerprint matches what GitHub lists. Nothing about you or your game is
+      sent, and you can turn update checks off in About → **Check for updates**.
+    - **Discord**, but only if you turn on [Discord alerts](#discord-alerts) and paste your
+      own webhook link. It's off until you do, and it only posts to that one link.
+  - The pictures it saves stay in your data folder. They're never uploaded anywhere,
+    including to Discord.
 
 ## Found a bug?
 
