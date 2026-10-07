@@ -91,6 +91,11 @@ for table in ("STATUS_RULES", "FEED_RULES", "EVENT_RULES"):
 # behaviour: real lines in, what does a person see?
 app = G.GlassMacro()
 app.withdraw()
+# building the app must not pick a page by itself: a stray _show_page at the
+# end of _bind_keys once saved "about" as the page to reopen on
+check(hasattr(app, "_key_page") and app._page_pref is None,
+      f"Ctrl+1-9 handler exists and building the app picks no page "
+      f"(_page_pref={getattr(app, '_page_pref', '?')!r})")
 SEQ = [
     ("started - F8 stops it", "Starting", "Started"),
     ("in the hub - joining FFA", "Joining Free For All",
@@ -363,6 +368,58 @@ for ent in (app.e_thresh, app.e_log, app.e_hook, app.e_uid):
     ent.delete(0, "end")
 del app._toggle_pin
 app.e_thresh.insert(0, old_thresh)
+
+# Ctrl+<digit> opens that page (through the real root binding)
+third = list(G.GlassMacro.PAGE_INFO)[2]
+app._show_page("home")
+app.tk.call("::gm_key", str(app), "<Control-Key-3>")
+check(app._page == third, f"Ctrl+3 opens {third} (on {app._page!r})")
+app._show_page("home")
+
+# a pinned full sidebar only where it fits
+old_side = app.settings.get("sidebar")
+app.settings["sidebar"] = "full"
+app._layout_for(700, 500)
+narrow = app._rail
+app._layout_for(985, 550)
+check(narrow and not app._rail,
+      f"full sidebar pin: rail at 700 wide, full at 985 "
+      f"(rail {narrow} / {app._rail})")
+if old_side is None:
+    app.settings.pop("sidebar", None)
+else:
+    app.settings["sidebar"] = old_side
+app._layout_for(985, 550)
+
+# removing the link or switching alerts off drops what is still queued
+FAKE_HOOK = ("https://discord.com/api/webhooks/" + "1" * 18 + "/"
+             + "a" * 68)
+for how in ("remove", "switch off"):
+    s = G.WebhookSender(FAKE_HOOK)
+    s._start = lambda: None                 # no thread: nothing ever runs
+    s.enqueue({"embed": G.build_embed("start", "t", "", 0, [], "f"),
+               "mention": None})
+    app._sender = s
+    if how == "remove":
+        app._hook_remove()
+    else:
+        app.sw_hook.deselect()
+        app._hook_switched()
+    check(s.dead and s.pump() == [] and app._sender is None,
+          f"alerts {how}: queued alerts dropped (dead={s.dead})")
+
+# the update notice is shown once, however many checks find it
+seen = []
+real_log = app.log
+app.log = lambda m: seen.append(str(m))
+app._ask_update = lambda: None
+app._show_update("9.8.7", G.RELEASES_URL)
+app._show_update("9.8.7", G.RELEASES_URL)
+check(sum("update available" in m for m in seen) == 1,
+      f"update found twice is announced once "
+      f"({sum('update available' in m for m in seen)} lines)")
+app.log = real_log
+del app._ask_update
 app.destroy()
 
 print(f"\n{'all passed' if not fails else f'{fails} FAILED'}")

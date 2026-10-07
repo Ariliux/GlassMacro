@@ -225,7 +225,7 @@ _user32 = ctypes.windll.user32
 ACCENT, ACCENT_SOFT, ACCENT_DEEP = "#5ecbff", "#a5e4ff", "#1f7fbf"
 INK = "#06131d"                         # text on an accent-filled button
 BG, PANEL, CARD, CARD_HI = "#070b11", "#0c121b", "#111a26", "#182334"
-LINE, TEXT, SUBTLE, MUTED = "#203047", "#e8f0f8", "#8ea2b8", "#56687e"
+LINE, TEXT, SUBTLE, MUTED = "#203047", "#e8f0f8", "#8ea2b8", "#7389a0"
 GREEN, RED, AMBER = "#4ade80", "#f87171", "#fbbf24"
 VIOLET, VIOLET_SOFT = ACCENT, ACCENT_SOFT   # older call sites use these names
 
@@ -2243,8 +2243,10 @@ class GlassMacro(ctk.CTk):
             left, top, w, h = r.left, r.top, r.right - r.left, r.bottom - r.top
         except Exception:
             left, top, (w, h) = 0, 0, screen_size()
-        width = min(want_w, int(w / s) - 16)
-        height = min(want_h, int(h / s) - 48)  # title bar and a little air
+        # never below the minimum size: Tk enforces it anyway, and centring
+        # a smaller size would push the bottom under the taskbar
+        width = max(640, min(want_w, int(w / s) - 16))
+        height = max(500, min(want_h, int(h / s) - 48))  # title bar, air
         # under 830 across the sidebar folds to a 56px rail, so 640 still fits
         self.minsize(640, 500)
         x = left + max(0, (w - round(width * s)) // 2)
@@ -2284,8 +2286,8 @@ class GlassMacro(ctk.CTk):
             if ox < 120 * s or oy < 120 * s:
                 return None
             # never bigger than that screen
-            ww = min(ww, int((wa.right - wa.left) / s))
-            hh = min(hh, int((wa.bottom - wa.top) / s) - 32)
+            ww = max(640, min(ww, int((wa.right - wa.left) / s)))
+            hh = max(500, min(hh, int((wa.bottom - wa.top) / s) - 32))
         except Exception:
             return None
         return ww, hh, x, y
@@ -2712,9 +2714,9 @@ class GlassMacro(ctk.CTk):
                                    key_font=self.F(10, semi=True,
                                                    family="Consolas"),
                                    height=36, corner_radius=10, width=156)
-        self.btn_run.pack(side="right", padx=(0, 16))
+        self.btn_run.pack(side="right", padx=(0, 20))   # = the cards' edge
         self.btn_pin = ctk.CTkButton(
-            head, text="", width=34, height=34, corner_radius=10,
+            head, text="", width=36, height=36, corner_radius=10,
             fg_color="transparent", hover_color=CARD_HI, border_width=1,
             border_color=LINE, text_color=SUBTLE,
             font=self.F(13, family=self._fam_icon or self._fam_sym),
@@ -2989,7 +2991,7 @@ class GlassMacro(ctk.CTk):
         self._toast_anim = None
         e = 1.0 if not i else 1 - (1 - min(i, steps) / steps) ** 3
         try:
-            self._toast_w.place(relx=1.0, rely=1.0, anchor="se", x=-16,
+            self._toast_w.place(relx=1.0, rely=1.0, anchor="se", x=-20,
                                 y=-16 + 12 * (1 - e))
             self._toast_w.lift()
         except Exception:
@@ -3027,6 +3029,10 @@ class GlassMacro(ctk.CTk):
                         "ok")
         elif text == "stop the macro first":
             self._toast("Stop the macro first, then try that again", "warn")
+        elif text.startswith("NOTE: those two points are almost the same spot"):
+            # comes straight after "calibration saved" and replaces its toast
+            self._toast("Same spot twice · redo setup and hover the Grenade "
+                        "Launcher", "warn", ("Redo", self.calibrate))
 
     # ---- the narrow rail ----
     def _root_configured(self, e):
@@ -3050,8 +3056,12 @@ class GlassMacro(ctk.CTk):
         self._win_w, self._win_h = w, h
         rail = self._auto_rail(w)
         pref = self.settings.get("sidebar", "auto")
-        if pref in ("rail", "full"):
-            rail = pref == "rail"
+        if pref == "rail":
+            rail = True
+        elif pref == "full":
+            # the pinned full sidebar only where it fits; under 800 the
+            # header and tiles would clip
+            rail = w < 800
         self._set_rail(rail)
         self._show_foot(not rail and h >= 520)
 
@@ -3224,6 +3234,8 @@ class GlassMacro(ctk.CTk):
         for e in (self.e_log, self.e_thresh, self.e_hook, self.e_uid):
             for k in ("t", "T"):
                 e._entry.bind(f"<Control-{k}>", self._key_pin)
+
+    def _key_page(self, key):
         self._show_page(key)
         return "break"
 
@@ -3321,6 +3333,29 @@ class GlassMacro(ctk.CTk):
                                     scrollbar_button_color=LINE,
                                     scrollbar_button_hover_color=MUTED)
         sf.pack(fill="both", expand=True, padx=(14, 4), pady=(0, 8))
+        # CTk always shows the scrollbar. Keep its width (the cards stay in
+        # line with the header) but paint it away while everything fits.
+        shown = [True]
+
+        def fit():
+            try:
+                need = sf._parent_canvas.yview() != (0.0, 1.0)
+                if need != shown[0]:
+                    shown[0] = need
+                    sf.configure(
+                        scrollbar_button_color=LINE if need else BG,
+                        scrollbar_button_hover_color=MUTED if need else BG)
+            except Exception:
+                pass
+
+        def later(_e=None):
+            try:
+                self.after_idle(fit)
+            except Exception:
+                pass
+        sf.bind("<Configure>", later, add="+")
+        sf._parent_canvas.bind("<Configure>", later, add="+")
+        later()
         return sf
 
     def _build_home(self, page):
@@ -3994,11 +4029,17 @@ class GlassMacro(ctk.CTk):
         else:                                    # first loadout slot
             box = (p(6), p(4), p(26), p(20))
         cv.create_rectangle(*box, outline=ACCENT, width=p(2))
-        bx, by = box[2] + p(4), box[1] - p(2)
-        bx = min(bx, p(170) - p(16))
-        by = max(by, p(2))
+        if step == 2:
+            # beside the first slot it would sit on the second one, so it
+            # goes under the slot row instead
+            bx, by = box[0] + p(2), box[3] + p(1)
+        else:
+            bx, by = box[2] + p(4), box[1] - p(2)
+            bx = min(bx, p(170) - p(16))
+            by = max(by, p(2))
+        # a ring in the background colour lifts it off whatever it touches
         cv.create_oval(bx, by, bx + p(14), by + p(14), fill=ACCENT,
-                       outline="")
+                       outline=bg, width=p(2))
         cv.create_text(bx + p(7), by + p(7), text=str(step + 1), fill=INK,
                        font=self._tkfont(round(9 * k), semi=True))
 
@@ -5005,7 +5046,9 @@ class GlassMacro(ctk.CTk):
             e.insert(0, mask_hook(saved))
             e.configure(state="disabled", text_color=SUBTLE)
             self.btn_hook_a.configure(text="Change", command=self._hook_change,
-                                      state="normal")
+                                      state="normal", fg_color="transparent",
+                                      hover_color=CARD_HI, text_color=TEXT,
+                                      border_width=1)
             self.btn_hook_b.configure(text="Remove", command=self._hook_remove)
             self.btn_eye.pack_forget()
             self.lbl_hook.configure(text="Saved. Send test to check it "
@@ -5046,7 +5089,13 @@ class GlassMacro(ctk.CTk):
             msg, colour, ok = ("That isn't a Discord webhook link. It starts "
                                "https://discord.com/api/webhooks/"), RED, False
         self.lbl_hook.configure(text=msg, text_color=colour)
-        self.btn_hook_a.configure(state="normal" if ok else "disabled")
+        # once the link is good, Save is the obvious next step
+        self.btn_hook_a.configure(
+            state="normal" if ok else "disabled",
+            fg_color=ACCENT if ok else "transparent",
+            hover_color=ACCENT_SOFT if ok else CARD_HI,
+            text_color=INK if ok else TEXT,
+            border_width=0 if ok else 1)
 
     @staticmethod
     def _entry_set(e, text):
@@ -5077,12 +5126,25 @@ class GlassMacro(ctk.CTk):
             self._hook_validate()
             return
         wh = self._hook_settings()
+        if url != normalize_hook(wh.get("url")):
+            self._kill_sender()          # nothing queued goes to the old link
         wh["url"] = url
         save_settings(self.settings)
         self._hook_editing = False
         self._hook_reveal = False
         self._paint_hook()
         self.log("webhook: link saved")
+
+    def _kill_sender(self):
+        """Alerts off or a different link: whatever is still queued or
+        waiting to retry is thrown away, never posted to the old link."""
+        s, self._sender = self._sender, None
+        if s is not None:
+            s.dead = True                # ends _send's retries and _loop
+            try:
+                s._discard()
+            except Exception:
+                pass
 
     def _hook_change(self):
         self._hook_editing = True
@@ -5093,7 +5155,7 @@ class GlassMacro(ctk.CTk):
         wh = self._hook_settings()
         wh["url"], wh["enabled"] = "", False
         save_settings(self.settings)
-        self._sender = None
+        self._kill_sender()
         self._hook_editing = False
         self._paint_hook()
         self.log("webhook: link removed - alerts are off")
@@ -5105,6 +5167,7 @@ class GlassMacro(ctk.CTk):
         save_settings(self.settings)
         if not on:
             self.sw_hook.deselect()
+            self._kill_sender()
         self._paint_hook_note()
         self._paint_badges()
 
@@ -5374,6 +5437,7 @@ class GlassMacro(ctk.CTk):
                              corner_radius=10, fg_color="transparent",
                              hover_color=CARD_HI, border_width=1,
                              border_color=LINE, text_color=TEXT,
+                             text_color_disabled=MUTED,
                              font=self.F(12), command=command)
 
     def _switch_row(self, card, title, note, first=False, on=True,
@@ -5543,7 +5607,9 @@ class GlassMacro(ctk.CTk):
         """Background thread: ask GitHub now and every UPDATE_EVERY seconds.
         Only touches the UI through _ui()."""
         time.sleep(4)                     # let the window settle first
-        while not self._check_updates_once():
+        # Check now on About may find it first: then this loop is done too
+        while not (getattr(self, "_update_info", None)
+                   or self._check_updates_once()):
             time.sleep(UPDATE_EVERY)
 
     def _check_updates_once(self):
@@ -5564,6 +5630,9 @@ class GlassMacro(ctk.CTk):
         return False
 
     def _show_update(self, version, url, info=None):
+        prev = getattr(self, "_update_info", None)
+        if prev and prev.get("version") == version:
+            return      # Check now and the background check both found it
         self._update_url = url
         self._update_info = info or {"version": version, "page": url,
                                      "zip": None, "sha256": None}
@@ -5921,8 +5990,17 @@ class GlassMacro(ctk.CTk):
         n[2].configure(text_color=colour)
         self.lbl_play_cap.configure(text="PLAYTIME" if live else "LAST RUN")
         for v in (self.val_picks, self.val_joins, self.val_recov):
-            if "bump:%d" % id(v) not in self._tweens:   # mid-flash: let it be
-                v.configure(text_color=colour)
+            key = "bump:%d" % id(v)
+            if live and key in self._tweens:    # mid-flash: let it finish
+                continue
+            # stopped: a flash still going would end on the live colour
+            job = self._tweens.pop(key, None)
+            if job:
+                try:
+                    self.after_cancel(job[0])
+                except Exception:
+                    pass
+            v.configure(text_color=colour)
         if live:
             self.bar_hour.configure(progress_color=ACCENT)
             self.bar_hour.set((s % 3600) / 3600.0)
