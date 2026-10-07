@@ -262,6 +262,69 @@ check("hide" not in tb.tag_names(f"{last}.0"), "...and All shows it again")
 app.sw_shots.toggle()
 check(G.load_settings().get("save_shots") is False,
       "turning Save screenshots off is remembered")
+
+# 1.1 polish: the shimmer follows the run's state, never a stored flag
+app._run_mode, app._state_title, app._dot_colour = "RUNNING", "In a match", G.GREEN
+check(app._shimmer_mode() == "run", "running: the shimmer runs")
+app._state_title = "Paused"
+check(app._shimmer_mode() == "amber", "paused: the shimmer turns amber")
+app._run_mode, app._state_title, app._dot_colour = "IDLE", "Ready", G.MUTED
+check(app._shimmer_mode() is None, "idle: no shimmer")
+app._updating, app._state_detail = True, "Downloading · 42% of 60 MB"
+check(app._shimmer_mode() == ("bar", 42), "downloading: a 42% bar")
+app._updating = False
+app.settings["motion"] = False
+check(app._anim_delay() == 300, "Animations off: the clock idles at 300 ms")
+app.settings["motion"] = True
+
+# toasts: a run's own lines never raise one; the few that should, do
+app._toast_hide()
+for line, _t, _f in SEQ:
+    app.log(line)
+check(not app._toast_w.winfo_manager(), "a run's log lines show no toast")
+app.log("stop the macro first")
+check(app._toast_w.winfo_manager() == "place"
+      and "Stop the macro" in app._toast_text.cget("text"),
+      "'stop the macro first' shows a toast")
+app._toast_hide()
+
+# sidebar badges: unread Activity rows, cleared by looking
+app._show_page("home")
+app.log("  done, back to jumping")
+check(app._unread > 0 and app._nav["activity"]["badge"][0] is not None,
+      "a new feed row puts a count on Activity")
+app._show_page("activity")
+check(app._unread == 0 and app._nav["activity"]["badge"][0] is None,
+      "...and opening Activity clears it")
+app._show_page("home")
+app.log("stopped on an error: test")
+check(app._log_alert and app._nav["log"]["badge"][0] is not None,
+      "an error line puts a red dot on Log")
+app._show_page("log")
+check(not app._log_alert, "...cleared once the Log page is opened")
+
+# the narrow rail, and the footer on a short window
+app._layout_for(700, 560)
+check(app._rail, "under 830 across: the rail")
+app._layout_for(840, 560)
+check(app._rail, "830-850: stays as it was (no flicker while dragging)")
+app._layout_for(900, 560)
+check(not app._rail and app._foot_shown, "from 850: the full sidebar")
+app._layout_for(900, 510)
+check(not app._foot_shown and app.lnk_update.winfo_manager() == "",
+      "under 520 high the footer goes; the update link keeps its own state")
+app._layout_for(985, 550)
+
+# the window comes back where it was - unless that's off every screen now
+app.settings["window"] = {"w": 900, "h": 600, "x": 100, "y": 100}
+check(app._saved_window(1.0) is not None, "a saved on-screen window is reused")
+app.settings["window"] = {"w": 900, "h": 600, "x": -40000, "y": 100}
+check(app._saved_window(1.0) is None, "a window off every screen is not")
+app.settings["window"] = {"w": 900, "h": 600, "x": 100, "y": 100}
+app.settings["remember"] = False
+check(app._saved_window(1.0) is None, "Remember off: never reused")
+app.settings.pop("window")
+app.settings["remember"] = True
 app.destroy()
 
 print(f"\n{'all passed' if not fails else f'{fails} FAILED'}")

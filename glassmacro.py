@@ -15,6 +15,7 @@ skips end screens.
 import ctypes
 import ctypes.wintypes as wintypes
 import json
+import math
 import os
 import io
 import queue
@@ -27,7 +28,7 @@ import time
 
 import cv2
 import numpy as np
-from PIL import ImageGrab
+from PIL import Image, ImageDraw, ImageFilter, ImageGrab, ImageTk
 
 import customtkinter as ctk
 import tkinter as tk
@@ -904,6 +905,79 @@ def draw_gem(canvas, x, y, size, dim=False):
                                for i, p in enumerate(pts)],
                               fill=colour, outline="")
 
+
+# 1.1 Stats chart: soft round capsules, lighter at the top. Tk's canvas has no
+# anti-aliasing, so the bars are drawn by PIL at 4x and scaled down.
+DAY_TRACK, DAY_ZERO = "#172333", "#2b3d55"
+DAY_BAR = ("#74cdf7", "#2a7fbd")             # top, bottom
+DAY_TODAY = ("#c9f1ff", ACCENT)
+# the header's running shimmer: a soft band sliding along the hairline
+SHIMMER_RUN = ("#203a51", ACCENT)
+SHIMMER_AMBER = ("#3a3016", AMBER)
+SHIMMER_RECTS = 17
+
+
+def render_day_bars(w, h, bars, bg=None, ss=4, glow_px=6):
+    """The 14 day bars as one smooth picture, w x h real pixels.
+
+    Each bar is a dict: x0, x1 (its column), top and base (the full-height
+    track), y (the bar's top), cols (top, bottom gradient colours, or None for
+    a day with no play: a small dot) and glow (a colour, or None).
+    """
+    bg = bg or CARD
+    W, H = max(1, w * ss), max(1, h * ss)
+    img = Image.new("RGB", (W, H), bg)
+    d = ImageDraw.Draw(img)
+    for b in bars:                         # faint full-height tracks
+        x0, x1 = b["x0"] * ss, b["x1"] * ss
+        d.rounded_rectangle((x0, b["top"] * ss, x1, b["base"] * ss),
+                            radius=(x1 - x0) / 2, fill=DAY_TRACK)
+    for b in bars:                         # a soft glow behind one bar
+        if not b.get("glow") or b.get("cols") is None:
+            continue
+        g = glow_px * ss
+        x0, x1, y0, y1 = (b["x0"] * ss, b["x1"] * ss, b["y"] * ss,
+                          b["base"] * ss)
+        box = (int(max(0, x0 - 3 * g)), int(max(0, y0 - 3 * g)),
+               int(min(W, x1 + 3 * g)), int(min(H, y1 + 3 * g)))
+        if box[2] <= box[0] or box[3] <= box[1]:
+            continue
+        m = Image.new("L", (box[2] - box[0], box[3] - box[1]), 0)
+        ImageDraw.Draw(m).rounded_rectangle(
+            (x0 - box[0], y0 - box[1], x1 - box[0], y1 - box[1]),
+            radius=(x1 - x0) / 2, fill=110)
+        img.paste(b["glow"], box, m.filter(ImageFilter.GaussianBlur(g)))
+    for b in bars:
+        x0, x1 = round(b["x0"] * ss), round(b["x1"] * ss)
+        bw = max(2, x1 - x0)
+        if b.get("cols") is None:          # no play that day: a small dot
+            r = bw * 0.24
+            cx, cy = (x0 + x1) / 2, b["base"] * ss - bw / 2
+            d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=DAY_ZERO)
+            continue
+        y0, y1 = round(b["y"] * ss), round(b["base"] * ss)
+        bh = max(bw, y1 - y0)
+        y0 = y1 - bh
+        top, bottom = b["cols"]
+        grad = Image.linear_gradient("L").resize((bw, bh))
+        fill = Image.composite(Image.new("RGB", (bw, bh), bottom),
+                               Image.new("RGB", (bw, bh), top), grad)
+        mask = Image.new("L", (bw, bh), 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, bw - 1, bh - 1),
+                                               radius=bw / 2, fill=255)
+        img.paste(fill, (x0, y0), mask)
+    return img.resize((max(1, w), max(1, h)), Image.LANCZOS)
+
+
+def round_box(w, h, fill, border, bg=None, radius=8, ss=4):
+    """A small anti-aliased rounded box (the chart's tooltip). bg=None: the
+    corners are see-through."""
+    img = (Image.new("RGB", (w * ss, h * ss), bg) if bg else
+           Image.new("RGBA", (w * ss, h * ss), (0, 0, 0, 0)))
+    ImageDraw.Draw(img).rounded_rectangle(
+        (0, 0, w * ss - 1, h * ss - 1), radius=radius * ss, fill=fill,
+        outline=border, width=ss)
+    return img.resize((w, h), Image.LANCZOS)
 
 
 # ------------------------------------------------------------- updates ---
@@ -2171,11 +2245,50 @@ class GlassMacro(ctk.CTk):
             left, top, (w, h) = 0, 0, screen_size()
         width = min(want_w, int(w / s) - 16)
         height = min(want_h, int(h / s) - 48)  # title bar and a little air
-        # a 220px sidebar plus the Home page needs about 800 across
-        self.minsize(800, 500)
+        # under 830 across the sidebar folds to a 56px rail, so 640 still fits
+        self.minsize(640, 500)
         x = left + max(0, (w - round(width * s)) // 2)
         y = top + max(0, (h - round((height + 32) * s)) // 2)
+        saved = self._saved_window(s)
+        if saved:
+            width, height, x, y = saved
+        self._win_w, self._win_h = width, height
         self.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _saved_window(self, s):
+        """Last time's size and place, when Remember is on and at least 120px
+        of it both ways is still inside the work area of a screen (a monitor
+        that was unplugged since must not leave the window out of reach)."""
+        if self.settings.get("remember", True) is False:
+            return None
+        win = self.settings.get("window")
+        try:
+            ww, hh, x, y = (int(win[k]) for k in ("w", "h", "x", "y"))
+        except Exception:
+            return None
+        ww, hh = max(640, ww), max(500, hh)
+        pw, ph = round(ww * s), round((hh + 32) * s)    # real px, title bar
+        try:
+            class _MI(ctypes.Structure):
+                _fields_ = [("size", wintypes.DWORD), ("mon", wintypes.RECT),
+                            ("work", wintypes.RECT), ("flags", wintypes.DWORD)]
+            rc = wintypes.RECT(x, y, x + pw, y + ph)
+            mon = ctypes.windll.user32.MonitorFromRect(ctypes.byref(rc), 2)
+            mi = _MI()
+            mi.size = ctypes.sizeof(_MI)
+            if not ctypes.windll.user32.GetMonitorInfoW(mon, ctypes.byref(mi)):
+                return None
+            wa = mi.work
+            ox = min(x + pw, wa.right) - max(x, wa.left)
+            oy = min(y + ph, wa.bottom) - max(y, wa.top)
+            if ox < 120 * s or oy < 120 * s:
+                return None
+            # never bigger than that screen
+            ww = min(ww, int((wa.right - wa.left) / s))
+            hh = min(hh, int((wa.bottom - wa.top) / s) - 32)
+        except Exception:
+            return None
+        return ww, hh, x, y
 
     # ------------------------------------------------------ fonts & sizes --
     def _init_fonts(self):
@@ -2271,6 +2384,25 @@ class GlassMacro(ctk.CTk):
         self._run_seq = 0
         self._end_reason, self._end_detail = "stopped", ""
         self._updated_note = None
+        # 1.1 polish: fades, the shimmer, toasts, the rail, badges
+        self._tweens = {}                   # key -> (after id, colour now)
+        self._state_detail = ""
+        self._pill_pulse = False
+        self._pill_colours = (MUTED, PANEL)
+        self._anim_delay_now = 300
+        self._anim_rest = set()             # what the clock already put away
+        self._shim_mode = None
+        self._rail = False
+        self._foot_shown = True
+        self._unread = 0                    # Activity rows not seen yet
+        self._log_alert = False             # an error line not seen yet
+        self._page_pref = None              # the last page picked by hand
+        self._win_save = None
+        self._toast_job = None
+        self._tip_job = None
+        self._days_job = None
+        self._days_geo = None
+        self._tip_i = None
 
         sw, sh = screen_size()
         self._screen_ok = (sw, sh) == SUPPORTED_SCREEN
@@ -2283,9 +2415,16 @@ class GlassMacro(ctk.CTk):
         ctk.CTkFrame(self, width=1, height=1, fg_color=LINE, corner_radius=0
                      ).grid(row=0, column=1, rowspan=3, sticky="ns")
         self._build_header()
-        tk.Canvas(self, width=1, height=self._px(2), bg=HAIRLINE,
-                  highlightthickness=0, bd=0).grid(row=1, column=2,
-                                                   sticky="ew")
+        # the hairline under the header; a shimmer slides along it while a
+        # run is going (items made once here, the clock only moves them)
+        self.hair = tk.Canvas(self, width=1, height=self._px(2), bg=HAIRLINE,
+                              highlightthickness=0, bd=0)
+        self.hair.grid(row=1, column=2, sticky="ew")
+        self._shim = [self.hair.create_rectangle(-99, 0, -98, self._px(2),
+                                                 fill=HAIRLINE, outline="")
+                      for _ in range(SHIMMER_RECTS)]
+        self._shim_bar = self.hair.create_rectangle(-99, 0, -98, self._px(2),
+                                                    fill=ACCENT, outline="")
         # every page is built once and stays alive; switching only raises
         # one over the others (workers read switches and the threshold entry
         # from these widgets, so none may ever be destroyed)
@@ -2309,13 +2448,21 @@ class GlassMacro(ctk.CTk):
         self._build_stats(self._pages["stats"])
         self._build_discord(self._pages["discord"])
         self._build_about(self._pages["about"])
+        self._build_toast()
+        self._build_rail_tip()
+        self._bind_keys()
+        self.bind("<Configure>", self._root_configured, add="+")
+        self._layout_for(self._win_w, self._win_h)
 
-        self._show_page("home" if self._ready() else "weapons")
+        self._show_page(self._start_page(), remember=False)
         self._show_cal()
         self._show_ffa()
         self._show_playtime(None)
         self._tick()
         self._animate()
+        if (self.settings.get("remember", True) is not False
+                and self.settings.get("zoomed") is True):
+            self.after(60, lambda: self.state("zoomed"))
 
     # ---- the window shell: sidebar, header, pages ----
     # key: (title, header subtitle, sidebar group, icon-font glyph, fallback)
@@ -2355,14 +2502,16 @@ class GlassMacro(ctk.CTk):
                         bg=PANEL, highlightthickness=0, bd=0)
         draw_gem(gem, 0, 0, self._px(20))
         gem.pack(side="left")
-        ctk.CTkLabel(brand, text="Glass", text_color=ACCENT,
-                     font=self.F(15, semi=True)).pack(side="left",
-                                                      padx=(8, 0))
-        ctk.CTkLabel(brand, text="Macro", text_color=TEXT,
-                     font=self.F(15, semi=True)).pack(side="left")
-        ctk.CTkLabel(brand, text=APP_VER, text_color=MUTED,
-                     font=self.F(11)).pack(side="left", padx=(6, 0),
-                                           pady=(3, 0))
+        self._brand = brand
+        self._brand_words = []
+        for text, colour, font, pad in (
+                ("Glass", ACCENT, self.F(15, semi=True), {"padx": (8, 0)}),
+                ("Macro", TEXT, self.F(15, semi=True), {}),
+                (APP_VER, MUTED, self.F(11), {"padx": (6, 0),
+                                              "pady": (3, 0)})):
+            w = ctk.CTkLabel(brand, text=text, text_color=colour, font=font)
+            w.pack(side="left", **pad)
+            self._brand_words.append((w, pad))
 
         # footer, packed before the nav so a short window squeezes the nav
         # and never pushes the screen line or the update link off the end
@@ -2385,20 +2534,30 @@ class GlassMacro(ctk.CTk):
 
         nav = ctk.CTkFrame(side, fg_color="transparent")
         nav.pack(fill="both", expand=True)
+        self._nav_frame = nav
         self._nav = {}
+        self._nav_heads = []                # (label, rail line, first row)
         group = None
         icon_font = self.F(14, family=self._fam_icon or self._fam_sym)
         for key, (title, _sub, grp, glyph, alt) in self.PAGE_INFO.items():
+            head = None
             if grp != group:
-                ctk.CTkLabel(nav, text=grp, text_color=MUTED, anchor="w",
-                             font=self.F(10, semi=True), height=14
-                             ).pack(fill="x", padx=22,
-                                    pady=(0 if group is None else 8, 4))
+                head = ctk.CTkLabel(nav, text=grp, text_color=MUTED,
+                                    anchor="w", font=self.F(10, semi=True),
+                                    height=14)
+                head.pack(fill="x", padx=22,
+                          pady=(0 if group is None else 8, 4))
+                # in the rail a short line stands in for the group's name
+                line = None if group is None else ctk.CTkFrame(
+                    nav, width=1, height=1, fg_color=HAIRLINE,
+                    corner_radius=0)
                 group = grp
             row = ctk.CTkFrame(nav, height=32, corner_radius=8,
-                               fg_color="transparent")
+                               fg_color=PANEL)
             row.pack(fill="x", padx=10, pady=1)
             row.pack_propagate(False)
+            if head is not None:
+                self._nav_heads.append((head, line, row))
             icon = ctk.CTkLabel(row, text=glyph if self._fam_icon else alt,
                                 width=20, height=20, text_color=SUBTLE,
                                 font=icon_font)
@@ -2406,7 +2565,14 @@ class GlassMacro(ctk.CTk):
             lbl = ctk.CTkLabel(row, text=title, text_color=SUBTLE,
                                font=self.F(13), anchor="w", height=20)
             lbl.pack(side="left", padx=(10, 0))
-            for w in (row, icon, lbl):
+            # badges: a count / "On" pill, or a dot (made once, placed when
+            # there is something to show)
+            pill = ctk.CTkLabel(row, text="", width=22, height=18,
+                                corner_radius=9, fg_color=ACCENT_DIM,
+                                text_color=ACCENT, font=self.F(10, semi=True))
+            dot = ctk.CTkFrame(row, width=8, height=8, corner_radius=4,
+                               fg_color=AMBER)
+            for w in (row, icon, lbl, pill, dot):
                 w.bind("<Enter>", lambda _e, k=key: self._nav_hover(k, True),
                        add="+")
                 w.bind("<Leave>", lambda _e, k=key: self._nav_hover(k, False),
@@ -2418,10 +2584,12 @@ class GlassMacro(ctk.CTk):
                 except Exception:
                     pass
             self._nav[key] = {"row": row, "icon": icon, "label": lbl,
-                              "hover": False, "painted": None}
+                              "pill": pill, "dot": dot, "badge": None,
+                              "hover": False, "painted": None, "fill": PANEL}
         # the 3x16 bar beside the selected row. Plain Tk: place() will not
         # size a CustomTkinter widget
         self._nav_ind = tk.Frame(nav, bg=ACCENT, bd=0, highlightthickness=0)
+        self._ind_job = None
 
     def _nav_inside(self, key):
         row = self._nav[key]["row"]
@@ -2434,30 +2602,92 @@ class GlassMacro(ctk.CTk):
         # moving from the row onto its own label fires Leave too
         if not on and self._nav_inside(key):
             return
+        if self._nav[key]["hover"] == on:
+            return
         self._nav[key]["hover"] = on
         self._paint_nav()
+        self._rail_tip(key if on else None)
 
     def _nav_click(self, key):
         if self._nav_inside(key):
+            self._rail_tip(None)
             self._show_page(key)
 
-    def _paint_nav(self):
+    def _paint_nav(self, slide=True):
         for key, n in self._nav.items():
             on = key == self._page
             fill = (NAV_ACTIVE if on else
-                    NAV_HOVER if n["hover"] else "transparent")
+                    NAV_HOVER if n["hover"] else PANEL)
             if n["painted"] == (on, fill):
                 continue
+            # hover fades; becoming (or no longer being) the page is instant,
+            # so a page switch doesn't queue redraws behind the new page
+            hover_only = n["painted"] is not None and n["painted"][0] == on
             n["painted"] = (on, fill)
-            n["row"].configure(fg_color=fill)
+            row = n["row"]
+            self._tween("nav:" + key, lambda c, r=row: r.configure(fg_color=c),
+                        n["fill"], fill, steps=6 if hover_only else 1)
+            n["fill"] = fill
             n["icon"].configure(text_color=ACCENT if on else SUBTLE)
             n["label"].configure(text_color=TEXT if on else SUBTLE,
                                  font=self.F(13, semi=on))
-        if self._page in self._nav:
-            self._nav_ind.place(in_=self._nav[self._page]["row"], x=0,
-                                rely=0.5, anchor="w", width=self._px(3),
-                                height=self._px(16))
-            self._nav_ind.lift()
+        self._slide_indicator(slide)
+
+    def _slide_indicator(self, slide=True):
+        """The 3x16 bar glides to the selected row: 6 frames of 16 ms,
+        easing out. It ends pinned to the row itself, so a resize or the
+        rail can't leave it behind."""
+        if self._page not in self._nav:
+            return
+        row = self._nav[self._page]["row"]
+        ind = self._nav_ind
+        size = {"width": self._px(3), "height": self._px(16)}
+        if self._ind_job:
+            try:
+                self.after_cancel(self._ind_job)
+            except Exception:
+                pass
+            self._ind_job = None
+        try:
+            to = row.winfo_y() + row.winfo_height() / 2
+            frm = ind.winfo_y() + self._px(16) / 2
+            ok = (slide and self._motion() and ind.winfo_ismapped()
+                  and row.winfo_height() > 1 and abs(frm - to) >= 2)
+        except Exception:
+            ok = False
+
+        def pin():
+            ind.place(in_=row, x=0, y=0, rely=0.5, anchor="w", **size)
+            ind.lift()
+        if not ok:
+            pin()
+            return
+
+        t0 = []
+
+        def step(i):
+            # 6 frames of 16 ms, but placed by the clock, so a frame that
+            # comes late lands where it should be by then
+            self._ind_job = None
+            now = time.perf_counter()
+            if not t0:
+                t0.append(now - 0.016)
+            t = (now - t0[0]) / 0.096
+            if t >= 1 or i > 12:
+                pin()
+                return
+            e = 1 - (1 - t) ** 3
+            try:
+                ind.place(in_=self._nav_frame, x=row.winfo_x(), rely=0,
+                          y=frm + (to - frm) * e, anchor="w", **size)
+                ind.lift()
+            except Exception:
+                pin()
+                return
+            self._ind_job = self.after(16, step, i + 1)
+        # once the new page has drawn - raising a page is a big redraw, and
+        # frames queued behind it would all land at once
+        self._ind_job = self.after_idle(step, 1)
 
     def _build_header(self):
         head = ctk.CTkFrame(self, height=56, fg_color=PANEL, corner_radius=0)
@@ -2510,7 +2740,7 @@ class GlassMacro(ctk.CTk):
         if self.settings.get("on_top"):
             self._apply_topmost()
 
-    def _show_page(self, key):
+    def _show_page(self, key, remember=True):
         page = self._pages.get(key)
         if page is None:
             return
@@ -2523,6 +2753,17 @@ class GlassMacro(ctk.CTk):
         self.lbl_title.configure(text=title)
         self.lbl_sub.configure(text=sub)
         self._paint_nav()
+        if key == "activity":
+            self._unread = 0
+        elif key == "log":
+            self._log_alert = False
+        self._paint_badges()
+        # remembered for next time - but not a page a setup, teach or Live
+        # test switched to by itself
+        if remember and not (self.calibrating or self.watching
+                             or self._setup_active):
+            self._page_pref = key
+            self._queue_window_save()
         if key == "log" and self._log_follow:
             try:
                 self.txt.see("end")
@@ -2531,6 +2772,17 @@ class GlassMacro(ctk.CTk):
         elif key == "stats":
             self._paint_stats()
             self._draw_days(True)
+
+    def _start_page(self):
+        """Weapons until set up; otherwise the page it was on last time (when
+        Remember is on), or Home."""
+        if not self._ready():
+            return "weapons"
+        page = self.settings.get("page")
+        if (self.settings.get("remember", True) is not False
+                and page in self.PAGE_INFO):
+            return page
+        return "home"
 
     def _show_tab(self, key):
         """The 1.0 tab names, still used by render_states.py."""
@@ -2567,6 +2819,10 @@ class GlassMacro(ctk.CTk):
                 fill, border = blend(PANEL, colour, 0.10), blend(PANEL, colour,
                                                                 0.40)
                 dot, fg = colour, colour
+            # the dot breathes while something is happening (not for Idle
+            # or Setup needed - those are waiting on you)
+            self._pill_pulse = colour is not None and text != "Setup needed"
+            self._pill_colours = (dot, fill)
             if self._pill_painted == (text, colour):
                 return
             self._pill_painted = (text, colour)
@@ -2582,6 +2838,9 @@ class GlassMacro(ctk.CTk):
         save_settings(self.settings)
         self._apply_topmost()
         self._paint_pin()
+        on = self.settings["on_top"]
+        self._toast("Kept on top while idle · it steps back during a run"
+                    if on else "No longer kept on top", "info")
 
     def _apply_topmost(self):
         """Keep on top only while idle: over fullscreen Rivals the macro's
@@ -2627,6 +2886,427 @@ class GlassMacro(ctk.CTk):
         self.toggle_run()
         if not self._ready():
             self._show_page("weapons")
+            self._toast("Set up your weapons first · three hovers in the "
+                        "weapon picker", "warn")
+
+    # ---- fades ----
+    def _tween(self, key, apply, a, b, ms=120, steps=6, fresh=False):
+        """Fade a colour from a to b in a few steps, calling apply(colour)
+        each time. A new fade on the same key replaces the old one and starts
+        from wherever that had got to (fresh=True starts over at a)."""
+        job = self._tweens.pop(key, None)
+        if job:
+            try:
+                self.after_cancel(job[0])
+            except Exception:
+                pass
+            if not fresh:
+                a = job[1]
+        if a == b or steps < 2 or not self._motion():
+            try:
+                apply(b)
+            except Exception:
+                pass
+            return
+        gap = max(10, ms // steps)
+
+        def step(i):
+            c = blend(a, b, i / steps)
+            try:
+                apply(c)
+            except Exception:
+                self._tweens.pop(key, None)
+                return
+            if i >= steps:
+                self._tweens.pop(key, None)
+                return
+            self._tweens[key] = (self.after(gap, step, i + 1), c)
+        step(1)
+
+    def _bump(self, lbl):
+        """A counter that just went up flashes light blue, then settles."""
+        end = TEXT if self.running else SUBTLE
+        self._tween("bump:%d" % id(lbl),
+                    lambda c: lbl.configure(text_color=c), ACCENT_SOFT, end,
+                    ms=600, steps=12, fresh=True)
+
+    # ---- toasts: one small note at a time, bottom-right, inside the window
+    # (never a Windows pop-up: those stay for _notify and the update ask) ----
+    TOAST_KINDS = {"ok": ("✓", GREEN), "info": ("●", ACCENT),
+                   "warn": ("!", AMBER), "err": ("×", RED)}
+
+    def _build_toast(self):
+        t = ctk.CTkFrame(self, fg_color=CARD_HI, corner_radius=12,
+                         border_width=1, border_color=LINE)
+        row = ctk.CTkFrame(t, fg_color="transparent")
+        row.pack(padx=(14, 16), pady=10)
+        self._toast_glyph = ctk.CTkLabel(row, text="", width=16, height=18,
+                                         font=self.F(12, family=self._fam_sym))
+        self._toast_glyph.pack(side="left")
+        self._toast_text = ctk.CTkLabel(row, text="", text_color=TEXT,
+                                        font=self.F(12), height=18,
+                                        anchor="w", justify="left",
+                                        wraplength=380)
+        self._toast_text.pack(side="left", padx=(8, 0))
+        self._toast_act = ctk.CTkLabel(row, text="", text_color=ACCENT,
+                                       font=self.F(12, semi=True), height=18,
+                                       cursor="hand2")
+        self._toast_act.bind("<Button-1>", lambda _e: self._toast_action())
+        for w in (t, row, self._toast_glyph, self._toast_text):
+            w.bind("<Button-1>", lambda _e: self._toast_hide(), add="+")
+        self._toast_w = t
+        self._toast_fn = None
+        self._toast_anim = None
+
+    def _toast(self, text, kind="info", action=None):
+        """Show a note for 3.2 s. A new one replaces the one showing.
+        action = (label, function) adds a link to it."""
+        try:
+            glyph, colour = self.TOAST_KINDS.get(kind,
+                                                 self.TOAST_KINDS["info"])
+            self._toast_glyph.configure(text=glyph, text_color=colour)
+            self._toast_text.configure(text=text)
+            if action:
+                label, self._toast_fn = action
+                self._toast_act.configure(text=label + "  ›")
+                if not self._toast_act.winfo_manager():
+                    self._toast_act.pack(side="left", padx=(14, 0))
+            else:
+                self._toast_fn = None
+                self._toast_act.pack_forget()
+            for job in (self._toast_job, self._toast_anim):
+                if job:
+                    self.after_cancel(job)
+            self._toast_anim = None
+            showing = bool(self._toast_w.winfo_manager())
+            self._toast_slide(0 if showing or not self._motion() else 1)
+            self._toast_job = self.after(3200, self._toast_hide)
+        except Exception:
+            pass
+
+    def _toast_slide(self, i, steps=5):
+        """Rises 12px into place over a few frames (i=0: straight there)."""
+        self._toast_anim = None
+        e = 1.0 if not i else 1 - (1 - min(i, steps) / steps) ** 3
+        try:
+            self._toast_w.place(relx=1.0, rely=1.0, anchor="se", x=-16,
+                                y=-16 + 12 * (1 - e))
+            self._toast_w.lift()
+        except Exception:
+            return
+        if i and i < steps:
+            self._toast_anim = self.after(16, self._toast_slide, i + 1)
+
+    def _toast_hide(self):
+        for job in (self._toast_job, self._toast_anim):
+            if job:
+                try:
+                    self.after_cancel(job)
+                except Exception:
+                    pass
+        self._toast_job = self._toast_anim = None
+        try:
+            self._toast_w.place_forget()
+        except Exception:
+            pass
+
+    def _toast_action(self):
+        fn = self._toast_fn
+        self._toast_hide()
+        if fn:
+            fn()
+
+    def _toast_from_log(self, msg):
+        """The few log lines that deserve a toast. A run's own lines never
+        do - the card and the feed already say those."""
+        text = str(msg)
+        if text == "calibration saved":
+            self._toast("Weapons set up · press Start with Rivals open", "ok")
+        elif text.startswith("saved the way back"):
+            self._toast("Way back saved · it's used from the next reconnect",
+                        "ok")
+        elif text == "stop the macro first":
+            self._toast("Stop the macro first, then try that again", "warn")
+
+    # ---- the narrow rail ----
+    def _root_configured(self, e):
+        """The window was resized or moved (children's events are ignored)."""
+        if e.widget is not self or not self.winfo_ismapped():
+            return
+        try:
+            s = ctk.ScalingTracker.get_window_scaling(self)
+        except Exception:
+            s = 1.0
+        self._layout_for(e.width / s, e.height / s)
+        self._queue_window_save()
+
+    def _layout_for(self, w, h):
+        """Under 830 across the sidebar folds to a 56px rail of icons; from
+        850 it opens again (in between it stays as it is, so dragging the
+        edge doesn't make it flicker). Ctrl+B can pin either. Under 520 high
+        the sidebar's footer goes, so the nav keeps its room."""
+        if w < 100 or h < 100:
+            return
+        self._win_w, self._win_h = w, h
+        rail = self._auto_rail(w)
+        pref = self.settings.get("sidebar", "auto")
+        if pref in ("rail", "full"):
+            rail = pref == "rail"
+        self._set_rail(rail)
+        self._show_foot(not rail and h >= 520)
+
+    def _auto_rail(self, w):
+        return self._rail if 830 <= w < 850 else w < 830
+
+    def _set_rail(self, rail):
+        if rail == self._rail:
+            return
+        self._rail = rail
+        self._rail_tip(None)
+        self.sidebar.configure(width=56 if rail else 220)
+        for w, pad in self._brand_words:
+            if rail:
+                w.pack_forget()
+            else:
+                w.pack(side="left", **pad)
+        self._brand.pack(fill="x", padx=18 if rail else 20)
+        for head, line, first in self._nav_heads:
+            if rail:
+                head.pack_forget()
+                if line is not None:
+                    line.pack(fill="x", padx=16, pady=(7, 6), before=first)
+            else:
+                if line is not None:
+                    line.pack_forget()
+                head.pack(fill="x", padx=22, pady=(0 if line is None else 8,
+                                                   4), before=first)
+        for n in self._nav.values():
+            n["row"].pack(fill="x", padx=8 if rail else 10, pady=1)
+            n["icon"].pack(side="left", padx=(10 if rail else 12, 0))
+            if rail:
+                n["label"].pack_forget()
+            else:
+                n["label"].pack(side="left", padx=(10, 0))
+            n["badge"] = None                  # re-placed for the new shape
+        self._paint_badges()
+        self._slide_indicator(False)
+
+    def _show_foot(self, show):
+        """The sidebar footer (screen line / update link). Hidden as a whole
+        - lnk_update keeps its own packed-or-not state inside it."""
+        if show == self._foot_shown:
+            return
+        self._foot_shown = show
+        if show:
+            self._side_foot.pack(side="bottom", fill="x",
+                                 before=self._nav_frame)
+        else:
+            self._side_foot.pack_forget()
+
+    def _build_rail_tip(self):
+        """The rail's page names: a small frame inside the window (never a
+        Toplevel, so it can't take focus), shown after 400 ms of hover."""
+        tip = ctk.CTkFrame(self, fg_color=CARD_HI, corner_radius=8,
+                           border_width=1, border_color=LINE)
+        self._tip_lbl = ctk.CTkLabel(tip, text="", text_color=TEXT,
+                                     font=self.F(12), height=18)
+        self._tip_lbl.pack(padx=10, pady=4)
+        self._tip = tip
+
+    def _rail_tip(self, key):
+        if self._tip_job:
+            try:
+                self.after_cancel(self._tip_job)
+            except Exception:
+                pass
+            self._tip_job = None
+        if key is None or not self._rail:
+            self._tip.place_forget()
+            return
+        self._tip_job = self.after(400, lambda: self._rail_tip_show(key))
+
+    def _rail_tip_show(self, key):
+        self._tip_job = None
+        n = self._nav.get(key)
+        if not n or not self._rail or not n["hover"]:
+            return
+        try:
+            s = ctk.ScalingTracker.get_widget_scaling(self)
+            row = n["row"]
+            x = (row.winfo_rootx() - self.winfo_rootx()
+                 + row.winfo_width()) / s + 10
+            y = (row.winfo_rooty() - self.winfo_rooty()
+                 + row.winfo_height() / 2) / s
+            text = self.PAGE_INFO[key][0]
+            if key == "activity" and self._unread:
+                text += f" · {self._unread} new"
+            self._tip_lbl.configure(text=text)
+            self._tip.place(x=x, y=y, anchor="w")
+            self._tip.lift()
+        except Exception:
+            pass
+
+    # ---- sidebar badges ----
+    def _paint_badges(self):
+        """Activity: unread count. Log: red dot after an error line. Weapons:
+        amber dot until set up. Discord: On. About: dot when an update is
+        out. In the rail every badge is a dot on the icon."""
+        nav = getattr(self, "_nav", None)
+        if not nav:
+            return
+        want = {}
+        if self._unread:
+            want["activity"] = ("9+" if self._unread > 9 else
+                                str(self._unread), ACCENT_DIM, ACCENT)
+        if self._log_alert:
+            want["log"] = (None, None, RED)
+        try:
+            if not self._ready():
+                want["weapons"] = (None, None, AMBER)
+        except Exception:
+            pass
+        wh = self.settings.get("webhook")
+        if (isinstance(wh, dict) and wh.get("enabled") is True
+                and normalize_hook(wh.get("url"))):
+            want["discord"] = ("On", GREEN_DIM, GREEN)
+        if getattr(self, "_update_info", None):
+            want["about"] = (None, None, ACCENT)
+        for key, n in nav.items():
+            b = want.get(key)
+            sig = (b, self._rail)
+            if n["badge"] == sig:
+                continue
+            n["badge"] = sig
+            pill, dot = n["pill"], n["dot"]
+            try:
+                if b is None:
+                    pill.place_forget()
+                    dot.place_forget()
+                    continue
+                text, fill, colour = b
+                if text is None or self._rail:
+                    pill.place_forget()
+                    dot.configure(fg_color=colour)
+                    if self._rail:
+                        dot.place(relx=0, rely=0, x=27, y=6, anchor="nw")
+                    else:
+                        dot.place(relx=1.0, x=-14, rely=0.5, y=0, anchor="e")
+                else:
+                    dot.place_forget()
+                    pill.configure(text=text, fg_color=fill, text_color=colour)
+                    pill.place(relx=1.0, x=-8, rely=0.5, y=0, anchor="e")
+            except Exception:
+                pass
+
+    # ---- keyboard: all inside the window. F8 stays the only global key ----
+    def _bind_keys(self):
+        order = list(self.PAGE_INFO)
+        for i, key in enumerate(order[:9], start=1):
+            self.bind(f"<Control-Key-{i}>",
+                      lambda _e, k=key: self._key_page(k))
+        self.bind("<Control-Tab>", lambda _e: self._key_cycle(1))
+        for seq in ("<Control-Shift-Tab>", "<Control-ISO_Left_Tab>"):
+            try:
+                self.bind(seq, lambda _e: self._key_cycle(-1))
+            except tk.TclError:
+                pass
+        for k in ("t", "T"):
+            self.bind(f"<Control-{k}>", self._key_pin)
+        for k in ("f", "F"):
+            self.bind(f"<Control-{k}>", self._key_find)
+        for k in ("b", "B"):
+            self.bind(f"<Control-{k}>", self._key_sidebar)
+        self.bind("<Escape>", self._key_escape)
+
+    def _key_page(self, key):
+        self._show_page(key)
+        return "break"
+
+    def _key_cycle(self, step):
+        order = list(self.PAGE_INFO)
+        at = order.index(self._page) if self._page in order else 0
+        self._show_page(order[(at + step) % len(order)])
+        return "break"
+
+    def _key_pin(self, _e=None):
+        self._toggle_pin()
+        return "break"
+
+    def _key_find(self, _e=None):
+        self._show_page("log")
+        try:
+            self.e_log.focus_set()
+            self.e_log._entry.select_range(0, "end")
+        except Exception:
+            pass
+        return "break"
+
+    def _key_sidebar(self, _e=None):
+        """Ctrl+B: the other sidebar. Pinned in settings - unless that's what
+        this width would pick anyway, then back to automatic."""
+        rail = not self._rail
+        auto = self._auto_rail(self._win_w)
+        self.settings["sidebar"] = ("auto" if rail == auto
+                                    else "rail" if rail else "full")
+        save_settings(self.settings)
+        self._layout_for(self._win_w, self._win_h)
+        return "break"
+
+    def _key_escape(self, _e=None):
+        self._toast_hide()
+        self._rail_tip(None)
+        try:
+            if (self._page == "log" and self.e_log.get()
+                    and self.focus_get() is self.e_log._entry):
+                self.e_log.delete(0, "end")
+                self._log_query_changed()
+        except Exception:
+            pass
+        if self._reset_armed:
+            self._disarm_reset()
+
+    # ---- remember the window and page ----
+    def _queue_window_save(self):
+        """Saved a second after the last move, resize or page change."""
+        if self.settings.get("remember", True) is False:
+            return
+        if self._win_save:
+            try:
+                self.after_cancel(self._win_save)
+            except Exception:
+                pass
+        self._win_save = self.after(1000, self._save_window)
+
+    def _save_window(self):
+        self._win_save = None
+        try:
+            s = self.settings
+            if s.get("remember", True) is False:
+                return
+            st = self.state()
+            if st in ("iconic", "withdrawn"):
+                return
+            changed = False
+            zoomed = st == "zoomed"
+            if bool(s.get("zoomed")) != zoomed:
+                s["zoomed"] = zoomed
+                changed = True
+            if not zoomed:               # keep the size it un-maximises to
+                m = re.fullmatch(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)",
+                                 self.geometry())
+                if m:
+                    win = dict(zip(("w", "h", "x", "y"),
+                                   (int(g) for g in m.groups())))
+                    if win != s.get("window"):
+                        s["window"] = win
+                        changed = True
+            if self._page_pref and s.get("page") != self._page_pref:
+                s["page"] = self._page_pref
+                changed = True
+            if changed:
+                save_settings(s)
+        except Exception:
+            pass
 
     # ---- pages ----
     def _scroll_page(self, page):
@@ -2841,6 +3521,9 @@ class GlassMacro(ctk.CTk):
             self.clipboard_append("\n".join(lines))
             self.btn_log_copy.configure(text="Copied")
             self.after(1500, lambda: self.btn_log_copy.configure(text="Copy"))
+            self._toast(f"Copied {len(lines)} line"
+                        f"{'s' if len(lines) != 1 else ''} to the clipboard",
+                        "ok")
         except Exception as exc:
             self.log(f"could not copy the log: {exc}")
 
@@ -2948,6 +3631,41 @@ class GlassMacro(ctk.CTk):
         self.val_recov = self._tile(row, 2, "RECOVERIES")
         self.val_today = self._tile(row, 3, "TODAY")
         self.val_today.configure(text=self._today_text())
+        # each tile opens the lifetime numbers on Stats
+        for v in (self.val_picks, self.val_joins, self.val_recov,
+                  self.val_today):
+            card = v.master
+            self._hoverable(card, "tile:%d" % id(card), CARD, CARD_HI,
+                            lambda: self._show_page("stats"))
+
+    def _hoverable(self, frame, key, rest, hot, command):
+        """A frame that fades to `hot` under the mouse and runs command on a
+        click, wherever on it (or its labels) the click lands."""
+        def inside():
+            x, y = self.winfo_pointerxy()
+            fx, fy = frame.winfo_rootx(), frame.winfo_rooty()
+            return (fx <= x < fx + frame.winfo_width()
+                    and fy <= y < fy + frame.winfo_height())
+
+        def enter(_e=None):
+            self._tween(key, lambda c: frame.configure(fg_color=c), rest, hot)
+
+        def leave(_e=None):
+            if not inside():
+                self._tween(key, lambda c: frame.configure(fg_color=c), hot,
+                            rest)
+
+        def click(_e=None):
+            if inside():
+                command()
+        for w in [frame] + list(frame.winfo_children()):
+            w.bind("<Enter>", enter, add="+")
+            w.bind("<Leave>", leave, add="+")
+            w.bind("<ButtonRelease-1>", click, add="+")
+            try:
+                w.configure(cursor="hand2")
+            except Exception:
+                pass
 
     def _tile(self, parent, col, caption, value="0", size=22, span_=1,
               row=0, height=1, sub=None, bold=False):
@@ -3547,7 +4265,7 @@ class GlassMacro(ctk.CTk):
         if not first:
             ctk.CTkFrame(card, height=1, fg_color=HAIRLINE,
                          corner_radius=0).pack(fill="x", padx=1)
-        row = ctk.CTkFrame(card, fg_color="transparent", corner_radius=12,
+        row = ctk.CTkFrame(card, fg_color=CARD, corner_radius=12,
                            cursor="hand2")
         row.pack(fill="x", padx=2, pady=2)
         inner = ctk.CTkFrame(row, fg_color="transparent")
@@ -3562,19 +4280,22 @@ class GlassMacro(ctk.CTk):
         b.pack(fill="x")
         c = ctk.CTkLabel(inner, text="›", text_color=SUBTLE, font=self.F(16))
         c.pack(side="right")
+        key = "link:%d" % id(row)
         for w in (row, inner, txt, a, b, c):
             w.bind("<Button-1>", lambda _e: command(), add="+")
-            w.bind("<Enter>", lambda _e: row.configure(fg_color=CARD_HI),
-                   add="+")
-            w.bind("<Leave>", lambda _e: self._link_leave(row), add="+")
+            w.bind("<Enter>", lambda _e: self._tween(
+                key, lambda col: row.configure(fg_color=col), CARD, CARD_HI),
+                add="+")
+            w.bind("<Leave>", lambda _e: self._link_leave(row, key), add="+")
         return row
 
-    def _link_leave(self, row):
+    def _link_leave(self, row, key):
         x, y = self.winfo_pointerxy()
         rx, ry = row.winfo_rootx(), row.winfo_rooty()
         if not (rx <= x < rx + row.winfo_width()
                 and ry <= y < ry + row.winfo_height()):
-            row.configure(fg_color="transparent")
+            self._tween(key, lambda col: row.configure(fg_color=col),
+                        CARD_HI, CARD)
 
     def _build_detection(self, sp):
         self._det_group = self._group(sp, "DETECTION")
@@ -3798,12 +4519,16 @@ class GlassMacro(ctk.CTk):
         self._group(body, "LAST 14 DAYS")
         chart = self._card(body, corner_radius=14)
         chart.pack(fill="x")
-        self.cv_days = tk.Canvas(chart, height=self._px(150), bg=CARD,
+        # inset from the card's rounded corners, so no bar comes near them
+        self.cv_days = tk.Canvas(chart, height=self._px(158), bg=CARD,
                                  highlightthickness=0, bd=0)
-        self.cv_days.pack(fill="x", padx=14, pady=12)
-        self.cv_days.bind("<Configure>", lambda _e: self._draw_days(True),
+        self.cv_days.pack(fill="x", padx=16, pady=12)
+        self.cv_days.bind("<Configure>", self._days_resized, add="+")
+        self.cv_days.bind("<Motion>", self._days_hover, add="+")
+        self.cv_days.bind("<Leave>", lambda _e: self._days_tip(None),
                           add="+")
         self._days_drawn = None
+        self._days_img = self._tip_img = None
 
         foot = ctk.CTkFrame(body, fg_color="transparent")
         foot.pack(fill="x", pady=(14, 8))
@@ -3907,35 +4632,104 @@ class GlassMacro(ctk.CTk):
             return
         self._days_drawn = sig
         p = self._px
-        cv.delete("all")
-        top, bottom = p(22), p(22)
+        pad = p(6)                     # equal room at both ends
+        top, bottom = p(24), p(24)     # value labels above, days below
         base = h - bottom
-        slot = w / 14.0
-        bar = max(p(6), min(p(30), slot * 0.56))
+        slot = (w - 2 * pad) / 14.0
+        bar = max(p(8), min(p(22), round(slot * 0.46)))
         peak = max(max(vals), 3600)
-        cv.create_line(0, base + 0.5, w, base + 0.5, fill=HAIRLINE)
         best = max(range(14), key=lambda i: vals[i])
+        bars, tops = [], []
+        for i, v in enumerate(vals):
+            cx = pad + slot * i + slot / 2
+            x0 = round(cx - bar / 2)
+            today = i == 13
+            y = base - max(bar, (base - top) * v / peak) if v >= 60 else base
+            tops.append(y)
+            bars.append({"x0": x0, "x1": x0 + bar, "top": top, "base": base,
+                         "y": y,
+                         "cols": None if v < 60 else
+                         DAY_TODAY if today else DAY_BAR,
+                         "glow": ACCENT if today else None})
+        try:
+            img = render_day_bars(w, h, bars, bg=CARD, glow_px=p(5))
+            self._days_img = ImageTk.PhotoImage(img, master=cv)
+        except Exception:
+            self._days_img = None
+        cv.delete("all")
+        self._tip_i = None
+        if self._days_img is not None:
+            cv.create_image(0, 0, image=self._days_img, anchor="nw")
+        # the words stay Tk text on top of the picture, so they stay crisp
+        narrow = slot < p(40)
         for i, (d, v) in enumerate(zip(days, vals)):
-            cx = slot * i + slot / 2
-            is_today = i == 13
-            if v >= 60:
-                bh = max(p(3), (base - top) * v / peak)
-                colour = ACCENT if is_today else blend(ACCENT_DEEP, ACCENT,
-                                                       0.25)
-                cv.create_rectangle(cx - bar / 2, base - bh, cx + bar / 2,
-                                    base, fill=colour, outline="")
-                if is_today or i == best:
-                    cv.create_text(cx, base - bh - p(9), text=span(v),
-                                   fill=TEXT if is_today else SUBTLE,
-                                   font=self._tkfont(10, semi=True))
-            else:
-                cv.create_rectangle(cx - bar / 2, base - p(2), cx + bar / 2,
-                                    base, fill=LINE, outline="")
-            cv.create_text(cx, base + p(11),
-                           text="Today" if is_today and slot >= p(40)
+            cx = pad + slot * i + slot / 2
+            today = i == 13
+            show = today or (i == best and not (narrow and best == 12))
+            if v >= 60 and show:
+                cv.create_text(cx, tops[i] - p(10), text=span(v),
+                               fill=TEXT if today else SUBTLE,
+                               font=self._tkfont(10, semi=True))
+            cv.create_text(cx, base + p(13),
+                           text="Today" if today and not narrow
                            else str(d.day),
-                           fill=ACCENT if is_today else MUTED,
-                           font=self._tkfont(10, semi=is_today))
+                           fill=ACCENT if today else MUTED,
+                           font=self._tkfont(10, semi=today))
+        self._days_geo = {"pad": pad, "slot": slot, "days": days,
+                          "vals": vals, "tops": tops, "top": top, "bar": bar}
+
+    def _days_resized(self, _e=None):
+        """Resizing fires dozens of these: draw once it settles (80 ms)."""
+        if self._days_job:
+            try:
+                self.after_cancel(self._days_job)
+            except Exception:
+                pass
+        self._days_job = self.after(80, self._days_settled)
+
+    def _days_settled(self):
+        self._days_job = None
+        self._draw_days(True)
+
+    def _days_hover(self, e):
+        geo = self._days_geo
+        if not geo:
+            return
+        i = int((e.x - geo["pad"]) // geo["slot"])
+        self._days_tip(i if 0 <= i < 14 else None)
+
+    def _days_tip(self, i):
+        """A small rounded note over the bar under the mouse: the day and its
+        exact playtime."""
+        if i == self._tip_i:
+            return
+        self._tip_i = i
+        cv = self.cv_days
+        cv.delete("tip")
+        geo = self._days_geo
+        if i is None or not geo:
+            return
+        try:
+            p = self._px
+            d, v = geo["days"][i], geo["vals"][i]
+            text = (f"{d.strftime('%a %b')} {d.day} · "
+                    + (span(v) if v >= 60 else "no play"))
+            font = self._tkfont(11, semi=True)
+            tw = tkfont.Font(root=cv, font=font).measure(text)
+            bw, bh = tw + p(20), p(24)
+            cx = geo["pad"] + geo["slot"] * i + geo["slot"] / 2
+            cw = cv.winfo_width()
+            x = min(max(cx - bw / 2, p(2)), cw - bw - p(2))
+            cy = max(geo["tops"][i] - p(18), bh / 2 + p(1))
+            bg_img = round_box(int(bw), int(bh), CARD_HI, LINE, None,
+                               radius=p(8))
+            self._tip_img = ImageTk.PhotoImage(bg_img, master=cv)
+            cv.create_image(round(x), round(cy - bh / 2), image=self._tip_img,
+                            anchor="nw", tags="tip")
+            cv.create_text(round(x + bw / 2), round(cy), text=text,
+                           fill=TEXT, font=font, tags="tip")
+        except Exception:
+            pass
 
     def _reset_stats_click(self):
         """Two clicks. The old file is renamed, never deleted."""
@@ -3969,6 +4763,8 @@ class GlassMacro(ctk.CTk):
         self._disarm_reset()
         self._paint_stats()
         self.val_today.configure(text=self._today_text())
+        self._toast(f"Stats reset · the old numbers are kept in {kept}", "ok",
+                    ("Open folder", self.open_data))
 
     def _disarm_reset(self):
         if self._reset_armed:
@@ -4226,6 +5022,7 @@ class GlassMacro(ctk.CTk):
                 self.sw_hook.configure(state="disabled")
             self._hook_validate()
         self.btn_hook_test.configure(state="normal" if saved else "disabled")
+        self._paint_badges()
 
     def _hook_validate(self):
         """The line under the box, as the link is typed or pasted."""
@@ -4301,6 +5098,7 @@ class GlassMacro(ctk.CTk):
         save_settings(self.settings)
         if not on:
             self.sw_hook.deselect()
+        self._paint_badges()
 
     def _hook_options_changed(self):
         wh = self._hook_settings()
@@ -4384,6 +5182,8 @@ class GlassMacro(ctk.CTk):
                      RED),
         }.get(status, ("Couldn't reach Discord. Try again in a bit.", AMBER))
         self.lbl_hook_test.configure(text=text, text_color=colour)
+        self._toast(text, {GREEN: "ok", RED: "err", AMBER: "warn"}.get(
+            colour, "info"))
         self.after(max(0, int(5000 - (time.time() - self._hook_test_at)
                               * 1000)),
                    lambda: self.btn_hook_test.configure(
@@ -4392,7 +5192,12 @@ class GlassMacro(ctk.CTk):
     # ---- About ----
     SHORTCUTS = (("F8", "Start or stop · works while Rivals is in front"),
                  ("F8", "During setup: save the spot under the mouse"),
-                 ("Esc", "Cancel a setup or a teach"))
+                 ("Esc", "Cancel a setup or a teach"),
+                 ("Ctrl 1–9", "Go to a page, in sidebar order"),
+                 ("Ctrl Tab", "Next page · with Shift, the one before"),
+                 ("Ctrl F", "Search the log"),
+                 ("Ctrl T", "Keep on top while idle, on or off"),
+                 ("Ctrl B", "Wide sidebar or the narrow rail"))
 
     def _build_about(self, page):
         sp = self._scroll_page(page)
@@ -4451,6 +5256,10 @@ class GlassMacro(ctk.CTk):
         self.lbl_upd = ctk.CTkLabel(row, text="", text_color=SUBTLE,
                                     font=self.F(12), anchor="w", height=18)
         self.lbl_upd.pack(side="left", fill="x", expand=True)
+        # once an update is found the line opens it (in the narrow rail the
+        # sidebar's update link is folded away)
+        self.lbl_upd.bind("<Button-1>", lambda _e: self._open_update()
+                          if getattr(self, "_update_info", None) else None)
         self._paint_upd(None)
 
         self._group(sp, "SHORTCUTS")
@@ -4464,7 +5273,7 @@ class GlassMacro(ctk.CTk):
             row.pack(fill="x", padx=14, pady=8)
             cap = ctk.CTkFrame(row, fg_color=PANEL, corner_radius=6,
                                border_width=1, border_color=KEYCAP_LINE,
-                               width=44, height=24)
+                               width=72, height=24)
             cap.pack(side="left")
             cap.pack_propagate(False)
             ctk.CTkLabel(cap, text=key, text_color=SUBTLE, height=18,
@@ -4504,8 +5313,8 @@ class GlassMacro(ctk.CTk):
             return
         info = getattr(self, "_update_info", None)
         if info:                  # already found: don't announce it twice
-            self._paint_upd(f"Update {info.get('version', '')} is out · the "
-                            f"link is bottom-left", ACCENT)
+            self._paint_upd(f"Update {info.get('version', '')} is out · "
+                            f"click here to get it", ACCENT)
             return
         if not self.settings.get("check_updates", True):
             self._paint_upd("Turn on Check for updates first.", AMBER)
@@ -4525,6 +5334,15 @@ class GlassMacro(ctk.CTk):
     def _check_done(self):
         self._checking = False
         self.btn_check.configure(state="normal", text="Check now")
+        # the line _check_updates_once just painted (it posts before this)
+        info = getattr(self, "_update_info", None)
+        if info:
+            self._toast(f"Update {info.get('version', '')} is out", "info",
+                        ("Get it", self._open_update))
+            return
+        colour = self.lbl_upd.cget("text_color")
+        self._toast(self.lbl_upd.cget("text"),
+                    {GREEN: "ok", AMBER: "warn"}.get(colour, "info"))
 
     def _group(self, parent, title):
         lbl = ctk.CTkLabel(parent, text=title, text_color=MUTED, anchor="w",
@@ -4732,8 +5550,9 @@ class GlassMacro(ctk.CTk):
         self.lnk_update.configure(text=f"Update {version} available \u203a")
         self.lbl_res.pack_forget()
         self.lnk_update.pack(side="left", padx=20)
-        self._paint_upd(f"Update {version} is out · the link is "
-                        f"bottom-left", ACCENT)
+        self._paint_upd(f"Update {version} is out · click here to get it",
+                        ACCENT)
+        self._paint_badges()
         self.log(f"update available: GlassMacro {version}")
         self._ask_update()
 
@@ -4911,6 +5730,7 @@ class GlassMacro(ctk.CTk):
             self._state_since = time.time()
         self.lbl_state.configure(text=title)
         self.lbl_detail.configure(text=detail)
+        self._state_detail = detail
         self._dot_colour = colour or MUTED
         self._paint_dot()
         self._paint_pill()
@@ -4938,26 +5758,121 @@ class GlassMacro(ctk.CTk):
         except Exception:
             pass
 
+    # ---- motion: one clock for everything that moves ----
+    def _motion(self):
+        """Settings > Animations. Off = nothing slides, fades or breathes."""
+        return self.settings.get("motion", True) is not False
+
+    def _shimmer_mode(self):
+        """What the header hairline shows: None, "run", "amber" (paused or
+        recovering) or ("bar", percent) while an update downloads."""
+        if getattr(self, "_updating", False):
+            m = re.search(r"Downloading · (\d+)%", self._state_detail)
+            return ("bar", min(100, int(m.group(1)))) if m else "run"
+        if self._run_mode == "RUNNING":
+            if self._state_title == "Paused" or self._dot_colour in (AMBER,
+                                                                     RED):
+                return "amber"
+            return "run"
+        return None
+
+    def _anim_delay(self):
+        """How soon the clock ticks again: 40 ms while the shimmer runs, 60
+        while only a dot breathes, 300 when nothing moves (idle, minimised,
+        or Animations off) - so an idle window costs next to nothing."""
+        try:
+            if not self._motion() or self.state() in ("iconic", "withdrawn"):
+                return 300
+        except Exception:
+            return 300
+        if self._shimmer_mode():
+            return 40
+        if self._pulsing() or self._pill_pulse:
+            return 60
+        return 300
+
     def _animate(self):
-        """One timer for the breathing dot. Only moves existing canvas items,
-        and idles when the window is minimised or nothing is running."""
+        """The one animation clock: the hero dot's halo, the pill's dot and
+        the shimmer along the header line. Only moves and recolours canvas
+        items made once at start-up - nothing is created here."""
         delay = 300
         try:
-            if self._pulsing() and self.state() != "iconic":
-                period = 2.4 if self._dot_colour == AMBER else 1.6
-                self._pulse_t = (self._pulse_t + 0.06 / period) % 1.0
-                t = self._pulse_t
-                c = self._px(16) / 2
-                rad = self._px(4) + self._px(4) * t
-                self.dotc.coords(self._halo, c - rad, c - rad, c + rad,
-                                 c + rad)
-                self.dotc.itemconfigure(
-                    self._halo,
-                    fill=blend(blend(self._dot_colour, CARD, 0.45), CARD, t))
-                delay = 60
+            delay = self._anim_delay()
+            now = time.perf_counter()          # tests patch time.time
+            live = delay < 300
+            self._anim_halo(now if live and self._pulsing() else None)
+            self._anim_pill(now if live and self._pill_pulse else None)
+            self._anim_shimmer(now if live else None)
         except Exception:
             pass
+        self._anim_delay_now = delay
         self.after(delay, self._animate)
+
+    def _anim_halo(self, now):
+        c = self._px(16) / 2
+        if now is None:
+            if "halo" not in self._anim_rest:
+                self._anim_rest.add("halo")
+                self.dotc.coords(self._halo, c, c, c, c)
+            return
+        self._anim_rest.discard("halo")
+        period = 2.4 if self._dot_colour == AMBER else 1.6
+        t = (now / period) % 1.0
+        rad = self._px(4) + self._px(4) * t
+        self.dotc.coords(self._halo, c - rad, c - rad, c + rad, c + rad)
+        self.dotc.itemconfigure(
+            self._halo, fill=blend(blend(self._dot_colour, CARD, 0.45), CARD,
+                                   t))
+
+    def _anim_pill(self, now):
+        dot, fill = self._pill_colours
+        if now is None:
+            if "pill" not in self._anim_rest:
+                self._anim_rest.add("pill")
+                self.pill_dot.itemconfigure(self._pill_core, fill=dot)
+            return
+        self._anim_rest.discard("pill")
+        k = 0.5 - 0.5 * math.cos(2 * math.pi * ((now / 1.6) % 1.0))
+        self.pill_dot.itemconfigure(self._pill_core,
+                                    fill=blend(dot, fill, 0.6 * k))
+
+    def _anim_shimmer(self, now):
+        """17 soft steps of a ramp, sliding along the 2px line; amber while
+        paused or recovering; a plain progress bar while an update
+        downloads."""
+        hair = self.hair
+        mode = self._shimmer_mode() if now is not None else None
+        h = self._px(2)
+        if mode is None:
+            if "shim" not in self._anim_rest:
+                self._anim_rest.add("shim")
+                self._shim_mode = None
+                for r in self._shim + [self._shim_bar]:
+                    hair.coords(r, -99, 0, -98, h)
+            return
+        self._anim_rest.discard("shim")
+        w = max(1, hair.winfo_width())
+        if isinstance(mode, tuple):            # downloading: how far along
+            if self._shim_mode != "bar":
+                self._shim_mode = "bar"
+                for r in self._shim:
+                    hair.coords(r, -99, 0, -98, h)
+            hair.coords(self._shim_bar, 0, 0, w * mode[1] / 100.0, h)
+            return
+        if self._shim_mode != mode:            # recolour only on a change
+            self._shim_mode = mode
+            lo, hi = SHIMMER_AMBER if mode == "amber" else SHIMMER_RUN
+            mid = (SHIMMER_RECTS - 1) / 2
+            for i, r in enumerate(self._shim):
+                t = 1 - abs(i - mid) / mid
+                hair.itemconfigure(r, fill=blend(lo, hi, t * t))
+            hair.coords(self._shim_bar, -99, 0, -98, h)
+        seg = self._px(10)
+        band = seg * SHIMMER_RECTS
+        speed = self._px(300)                  # px a second
+        x = (now * speed) % (w + band) - band
+        for i, r in enumerate(self._shim):
+            hair.coords(r, x + i * seg, 0, x + (i + 1) * seg, h)
 
     def _show_playtime(self, secs, live=False):
         """The big number. None = never run; live = counting now; otherwise
@@ -4986,7 +5901,8 @@ class GlassMacro(ctk.CTk):
         n[2].configure(text_color=colour)
         self.lbl_play_cap.configure(text="PLAYTIME" if live else "LAST RUN")
         for v in (self.val_picks, self.val_joins, self.val_recov):
-            v.configure(text_color=colour)
+            if "bump:%d" % id(v) not in self._tweens:   # mid-flash: let it be
+                v.configure(text_color=colour)
         if live:
             self.bar_hour.configure(progress_color=ACCENT)
             self.bar_hour.set((s % 3600) / 3600.0)
@@ -5263,9 +6179,11 @@ class GlassMacro(ctk.CTk):
                 if counter == "picks":
                     self.n_picks += 1
                     self.val_picks.configure(text=str(self.n_picks))
+                    self._bump(self.val_picks)
                 elif counter == "joins":
                     self.n_joins += 1
                     self.val_joins.configure(text=str(self.n_joins))
+                    self._bump(self.val_joins)
                 return
 
     def _feed_from_log(self, msg):
@@ -5294,6 +6212,9 @@ class GlassMacro(ctk.CTk):
         else:
             items.insert(0, it)
             del items[300:]
+        if self._page != "activity":       # the sidebar's unread count
+            self._unread += 1
+            self._paint_badges()
         if self._feed_filter != "All":
             # the textbox merge below assumes its top row is _feed_top, which
             # isn't true under a filter - redraw from the model instead
@@ -5387,6 +6308,7 @@ class GlassMacro(ctk.CTk):
         if self._live_run and key in ("reopen", "restart", "reconnect"):
             self.n_recov += 1
             self.val_recov.configure(text=str(self.n_recov))
+            self._bump(self.val_recov)
         if key == "error":
             # the worker has stopped; the stop alert carries this
             self._end_reason, self._end_detail = "error", detail
@@ -5431,6 +6353,7 @@ class GlassMacro(ctk.CTk):
             if self._hour_sent is not None and h > self._hour_sent:
                 self._hour_sent = h
                 self._hook("hourly")
+                self._toast(f"{h}h of playtime · still going", "ok")
             if (self._paused_since is not None and not self._paused_sent
                     and now - self._paused_since >= 600):
                 self._paused_sent = True
@@ -5711,6 +6634,9 @@ class GlassMacro(ctk.CTk):
             cls = self._log_class(text)
             if cls:
                 tb.tag_add(cls, f"{first}.10", f"{end}.0")
+            if cls == "err" and self._page != "log" and not self._log_alert:
+                self._log_alert = True       # a red dot on Log until seen
+                self._paint_badges()
             if self._log_query or self._log_mode != "All":
                 if self._log_visible(text):
                     self._log_shown += 1
@@ -5736,7 +6662,7 @@ class GlassMacro(ctk.CTk):
             pass
         for fn in (self._status_from_log, self._feed_from_log,
                    self._guide_from_log, self._events_from_log,
-                   self._way_from_log):
+                   self._way_from_log, self._toast_from_log):
             try:
                 fn(msg)
             except Exception:
@@ -5851,6 +6777,7 @@ class GlassMacro(ctk.CTk):
                            MUTED)
         self._apply_topmost()        # the pin comes back once setup ends
         self._paint_pill()
+        self._paint_badges()
 
     # ----------------------------------------------------------- actions --
     def _hotkey(self):
