@@ -14,6 +14,7 @@ import sys
 import tempfile
 
 os.environ["LOCALAPPDATA"] = tempfile.mkdtemp(prefix="glass_det_")
+os.environ["GLASSMACRO_NO_SEND"] = "1"                         # never post to Discord
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import glassmacro as G                                      # noqa: E402

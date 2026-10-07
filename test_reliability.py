@@ -11,6 +11,7 @@ import tempfile
 import uuid
 
 os.environ["LOCALAPPDATA"] = tempfile.mkdtemp(prefix="glass_rel_")
+os.environ["GLASSMACRO_NO_SEND"] = "1"                         # never post to Discord
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import keyboard                                              # noqa: E402
@@ -52,6 +53,7 @@ check(G.rotate_log(log, limit=5000) and not os.path.exists(log)
 G.WarningPopup = type("P", (), {"last": 0.0, "open": False,
                                 "show": lambda *a, **k: "ok"})
 G.latest_release = lambda *a, **k: None
+G.release_info = lambda *a, **k: None     # the background update check stays offline
 app = G.GlassMacro()
 app.withdraw()
 app.update()

@@ -14,12 +14,14 @@ import sys
 import tempfile
 
 os.environ["LOCALAPPDATA"] = tempfile.mkdtemp(prefix="glass_rules_")
+os.environ["GLASSMACRO_NO_SEND"] = "1"                         # never post to Discord
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import keyboard                                              # noqa: E402
 keyboard.add_hotkey = lambda *a, **k: None                   # never arm F8
 import glassmacro as G                                       # noqa: E402
 G.latest_release = lambda *a, **k: None   # tests never touch the network
+G.release_info = lambda *a, **k: None     # ...nor does the background update check
 
 assert G.DATA_DIR.startswith(os.environ["LOCALAPPDATA"]), G.DATA_DIR
 

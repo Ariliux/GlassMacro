@@ -18,6 +18,7 @@ import urllib.request
 import zipfile
 
 os.environ["LOCALAPPDATA"] = tempfile.mkdtemp(prefix="glass_auto_")
+os.environ["GLASSMACRO_NO_SEND"] = "1"                         # never post to Discord
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import keyboard                                              # noqa: E402
@@ -72,6 +73,7 @@ for tweak, why in (
     check(i is not None and i["zip"] is None,
           f"{why} is never used for an auto-update")
 urllib.request.urlopen = REAL_URLOPEN
+G.release_info = lambda *a, **k: None   # the app's background check stays offline
 
 # ---- downloading ---------------------------------------------------------
 src_zip = os.path.join(WORK, "src.zip")
