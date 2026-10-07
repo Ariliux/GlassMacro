@@ -2574,12 +2574,26 @@ class GlassMacro(ctk.CTk):
 
     def _apply_topmost(self):
         """Keep on top only while idle: over fullscreen Rivals the macro's
-        clicks would land on this window and pause the run."""
+        clicks would land on this window and pause the run, and setup /
+        Live test read the screen, which would see this window instead."""
         try:
-            self.attributes("-topmost", bool(self.settings.get("on_top")
-                                             and not self.running))
+            self.attributes("-topmost", bool(
+                self.settings.get("on_top")
+                and not (self.running or self.calibrating or self.watching)))
         except Exception:
             pass
+
+    def _drop_pin(self):
+        """Get out of Rivals' way for a run, setup or Live test. -topmost 0
+        alone leaves the window above every normal window (Tk uses
+        HWND_NOTOPMOST), so a pinned window is also pushed to the bottom -
+        lower() uses HWND_BOTTOM and never activates it."""
+        self._apply_topmost()
+        if self.settings.get("on_top"):
+            try:
+                self.lower()
+            except Exception:
+                pass
 
     def _paint_pin(self):
         on = bool(self.settings.get("on_top"))
@@ -2594,6 +2608,8 @@ class GlassMacro(ctk.CTk):
 
     def _run_clicked(self):
         """The header button. F8 calls toggle_run directly."""
+        if self.calibrating and not self.running:
+            return              # F8 is ignored during setup too (_hotkey)
         self.toggle_run()
         if not self._ready():
             self._show_page("weapons")
@@ -2641,7 +2657,7 @@ class GlassMacro(ctk.CTk):
         sf = self._scroll_page(page)
         self._weap_scroll = sf
         self._build_guide(sf)
-        self.guide.pack(fill="x", padx=(6, 10), pady=(16, 0))
+        self.guide.pack(fill="x", pady=(16, 0))
         self._build_detection(sf)
 
     def _build_log(self, page):
@@ -4359,6 +4375,12 @@ class GlassMacro(ctk.CTk):
                         hover_color=RED_DIM, text_color=TEXT, glyph_color=RED,
                         border_color=LINE, key_fg=PANEL,
                         key_border=KEYCAP_LINE, key_text=SUBTLE)
+        elif self.calibrating:
+            # Start is ignored during setup (_run_clicked, _hotkey)
+            b.configure(text="Setting up", glyph="…",
+                        fg_color=CARD_HI, hover_color=CARD_HI, text_color=MUTED,
+                        glyph_color=ACCENT, border_color=LINE, key_fg=PANEL,
+                        key_border=KEYCAP_LINE, key_text=MUTED)
         elif self._ready():
             b.configure(text="Start", glyph="▶", fg_color=ACCENT,
                         hover_color=ACCENT_SOFT, text_color=INK,
@@ -4393,6 +4415,7 @@ class GlassMacro(ctk.CTk):
         if not self.running and self._ready() and not self._setup_active:
             self.set_state("Ready", "Open Rivals and press F8, or hit Start.",
                            MUTED)
+        self._apply_topmost()        # the pin comes back once setup ends
         self._paint_pill()
 
     # ----------------------------------------------------------- actions --
@@ -4410,6 +4433,8 @@ class GlassMacro(ctk.CTk):
             self.log("stop the macro first")
             return
         self.calibrating = True
+        self._drop_pin()             # setup grabs the screen under us
+        self._paint_run()
         self._show_page("weapons")
         self.btn_cal.configure(text="Waiting for F8...", state="disabled")
         self.log("hover RANDOM and press F8")
@@ -4494,6 +4519,8 @@ class GlassMacro(ctk.CTk):
             self.log("stop the macro first")
             return
         self.calibrating = True
+        self._drop_pin()
+        self._paint_run()
         self._show_page("wayback")
         self.btn_ffa.configure(text="Waiting for F8...", state="disabled")
         self.log("from the LOBBY: hover PLAY and press F8 (then click it "
@@ -4541,6 +4568,13 @@ class GlassMacro(ctk.CTk):
             self.calibrating = False
             self._ui(lambda: self.btn_ffa.configure(
                 text="Re-teach", state="normal"))
+            self._ui(self._setup_over)
+
+    def _setup_over(self):
+        """Tk thread, after a setup or Live test ends: pin and Start back."""
+        self._apply_topmost()
+        self._paint_run()
+        self._paint_pill()
 
     def _show_ffa(self):
         if not hasattr(self, "lbl_ffa"):
@@ -4757,6 +4791,9 @@ class GlassMacro(ctk.CTk):
             self.watching = False
             self.btn_watch.configure(text="Live test")
             self._status("IDLE", SUBTLE)
+            # deferred: when Start stops the test, running is set by then
+            # and the pin is not re-raised over Rivals for an instant
+            self.after_idle(self._apply_topmost)
             return
         if not self.cal:
             self.log("calibrate first")
@@ -4765,6 +4802,7 @@ class GlassMacro(ctk.CTk):
             self.log("stop the macro first")
             return
         self.watching = True
+        self._drop_pin()             # the test reads the screen under us
         self.btn_watch.configure(text="Stop test")
         self._status("WATCHING", AMBER)
         threading.Thread(target=self._watch_worker, daemon=True).start()
@@ -4792,6 +4830,7 @@ class GlassMacro(ctk.CTk):
             time.sleep(0.5)
         self.watching = False
         self._ui(lambda: self.btn_watch.configure(text="Live test"))
+        self._ui(self._apply_topmost)
 
     def toggle_run(self):
         if getattr(self, "_updating", False):
@@ -4799,6 +4838,7 @@ class GlassMacro(ctk.CTk):
             return
         if self.running:
             self.running = False
+            self._apply_topmost()    # _tick misses a run shorter than 1 s
             self._paint_run()
             self.session_start = None
             self._status("IDLE", MUTED)
@@ -4828,7 +4868,7 @@ class GlassMacro(ctk.CTk):
         self._fs = self._fresh_fs()
         self._warn_display()
         self.running = True
-        self._apply_topmost()        # the pin would catch the macro's clicks
+        self._drop_pin()             # the pin would catch the macro's clicks
         keep_awake(True)
         self._paint_run()
         self.session_start = time.time()
