@@ -159,7 +159,8 @@ nothing you download ever should.
 
 - **Use it at your own risk.** Macros can go against Roblox's or the game's rules, and your
   account is your responsibility.
-- **I'm not affiliated with Roblox or Rivals.**
+- **I'm not affiliated with Roblox or Rivals, and I'm not partnered or collaborating with any
+  other macro developers.** GlassMacro is a solo project, made by me.
 - **What it actually does on your PC:**
   - It looks at your screen to see what's showing, and only uses your keyboard and mouse
     inside Rivals.
