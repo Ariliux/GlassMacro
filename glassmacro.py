@@ -931,6 +931,13 @@ ASSET_PREFIX = f"https://github.com/{REPO}/releases/download/"
 UPDATE_DIR = os.path.join(DATA_DIR, "update")
 
 
+def _http(req, timeout):
+    """The one place a request leaves the app. urlopen is looked up on every
+    call, so a test that fakes urllib.request.urlopen still catches it."""
+    import urllib.request
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def release_info(timeout=6.0):
     """The newest published release, or None. A dict with:
     version, page (release page), zip (download url or None), sha256.
@@ -943,7 +950,7 @@ def release_info(timeout=6.0):
         "Accept": "application/vnd.github+json",
         "User-Agent": f"{APP_NAME}/{APP_VER}"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _http(req, timeout) as r:
             data = json.loads(r.read().decode("utf-8"))
         tag = str(data.get("tag_name") or "")
         if data.get("draft") or data.get("prerelease") or not version_tuple(tag):
@@ -985,7 +992,7 @@ def download_update(url, sha256, dest, progress=None, timeout=30):
     try:
         req = urllib.request.Request(url, headers={
             "User-Agent": f"{APP_NAME}/{APP_VER}"})
-        with urllib.request.urlopen(req, timeout=timeout) as r, \
+        with _http(req, timeout) as r, \
                 open(tmp, "wb") as out:
             total = int(r.headers.get("Content-Length") or 0)
             done = 0
@@ -1202,6 +1209,516 @@ def save_settings(data):
         os.replace(tmp, SETTINGS_PATH)
     except Exception:
         pass
+
+
+# ------------------------------------------------------ Discord alerts ---
+# Opt-in only: nothing is sent until the user turns alerts on AND pastes their
+# own webhook link. A webhook link works like a password for one channel, so
+# it is never logged and is masked anywhere it is shown. Only a real Start can
+# send anything (see GlassMacro._hook), and GLASSMACRO_NO_SEND blocks every
+# post outright - the tests and the screenshot tool always set it.
+HOOK_RE = (r"https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api/"
+           r"(?:v\d{1,2}/)?webhooks/(\d{17,20})/([A-Za-z0-9_-]{60,100})/?")
+HOOK_UA = f"{APP_NAME}/{APP_VER} (+https://github.com/{REPO})"
+HOOK_TIMEOUT = 10
+HOOK_BATCH_WAIT = 2.0          # gather events this long into one message
+HOOK_MAX_EMBEDS = 10           # Discord's limits for one message
+HOOK_MAX_CHARS = 6000
+HOOK_GAP = 2.5                 # at most one post this often
+HOOK_BACKOFF = (2, 5, 15, 30, 60)
+HOOK_429_WAITS = 3
+HOOK_ACCENT, HOOK_GREEN, HOOK_AMBER, HOOK_RED, HOOK_MUTED = (
+    0x5ECBFF, 0x4ADE80, 0xFBBF24, 0xF87171, 0x56687E)
+HOOK_COLOURS = {"start": HOOK_ACCENT, "hourly": HOOK_GREEN,
+                "updated": HOOK_GREEN, "reopen": HOOK_AMBER,
+                "restart": HOOK_AMBER, "reconnect": HOOK_AMBER,
+                "paused10": HOOK_AMBER, "error": HOOK_RED,
+                "gave_up": HOOK_RED, "no_join": HOOK_RED}
+# when the queue is full the least important go first
+PRI_PERIODIC, PRI_MILESTONE, PRI_NORMAL = 0, 1, 2
+
+
+def webhook_defaults():
+    return {"enabled": False, "url": "", "user_id": "",
+            "events": {"start_stop": True, "hourly": True, "error": True,
+                       "stuck": True, "paused": True, "recover": False,
+                       "updated": False},
+            "mention": {"error": True, "stuck": True, "paused": True}}
+
+
+def _hook_parts(url):
+    m = re.fullmatch(HOOK_RE, str(url or "").strip())
+    return m.groups() if m else None
+
+
+def normalize_hook(url):
+    """The canonical https://discord.com/api/webhooks/<id>/<token>, or None
+    for anything that is not a Discord webhook link."""
+    parts = _hook_parts(url)
+    if not parts:
+        return None
+    return f"https://discord.com/api/webhooks/{parts[0]}/{parts[1]}"
+
+
+def mask_hook(url):
+    """'discord.com/…/webhooks/1234…5678/••••' - safe to show; '' if invalid."""
+    parts = _hook_parts(url)
+    if not parts:
+        return ""
+    wid = parts[0]
+    return f"discord.com/…/webhooks/{wid[:4]}…{wid[-4:]}/••••"
+
+
+def scrub(text, url=None):
+    """Text that is safe to send: no webhook token, no paths, no PC or user
+    name, at most 300 characters."""
+    s = str(text or "")
+    parts = _hook_parts(url)
+    if parts:
+        s = s.replace(parts[1], "••••")
+    s = re.sub(r"https?://\S*webhooks/\S+", "[webhook link]", s)
+    s = re.sub(r"[A-Za-z]:[\\/][^\s'\"<>|]*", "[path]", s)
+    s = re.sub(r"\\\\[^\s'\"<>|]+", "[path]", s)
+    for name in {os.environ.get("USERNAME"), os.environ.get("COMPUTERNAME")}:
+        if name and len(name) >= 3:
+            s = re.sub(re.escape(name), "[name]", s, flags=re.I)
+    return s if len(s) <= 300 else s[:297] + "..."
+
+
+def build_embed(kind, title, desc, colour_int=None, fields=(), footer=""):
+    """One Discord embed. The footer is only ever 'GlassMacro <ver> · run #N'
+    - never the PC name, the user name or a path."""
+    embed = {"title": str(title)[:256],
+             "description": str(desc or "")[:4096],
+             "color": int(colour_int if colour_int is not None
+                          else HOOK_COLOURS.get(kind, HOOK_MUTED)),
+             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    if fields:
+        embed["fields"] = [{"name": str(n)[:256], "value": str(v)[:1024] or "-",
+                            "inline": True} for n, v in list(fields)[:25]]
+    if footer:
+        embed["footer"] = {"text": str(footer)[:2048]}
+    return embed
+
+
+def build_payload(embeds, mention_ids=()):
+    """The message. Mentions are opt-in per user id; parse is always empty,
+    so text in an embed can never ping @everyone or a role."""
+    ids = [i for i in dict.fromkeys(str(m) for m in mention_ids if m)
+           if re.fullmatch(r"\d{17,20}", i)]
+    allowed = {"parse": []}
+    if ids:
+        allowed["users"] = ids
+    return {"username": APP_NAME,
+            "content": " ".join(f"<@{i}>" for i in ids),
+            "allowed_mentions": allowed,
+            "embeds": list(embeds)}
+
+
+def embed_chars(embed):
+    """What Discord counts toward its 6000-character limit."""
+    n = len(embed.get("title", "")) + len(embed.get("description", ""))
+    n += len((embed.get("footer") or {}).get("text", ""))
+    for f in embed.get("fields") or []:
+        n += len(f.get("name", "")) + len(f.get("value", ""))
+    return n
+
+
+class WebhookSender:
+    """Posts alerts on its own daemon thread, started on the first enqueue.
+
+    enqueue() never blocks. Events are batched (up to 2 s, 10 embeds, 6000
+    characters a post), posts are paced, rate limits and outages are waited
+    out, and a link Discord rejects stops everything for the session. Only
+    state changes are logged, as fixed 'webhook:' lines that never contain
+    the link or any word the log readers react to.
+    """
+
+    def __init__(self, url, *, transport=None, sleep=time.sleep, log=None):
+        self.url = normalize_hook(url) or ""
+        self._transport = transport      # None = _http, looked up per post
+        self._sleep = sleep
+        self._log = log
+        self._q = queue.Queue(30)
+        self._lock = threading.Lock()
+        self._thread = None
+        self._pending = 0
+        self._hurry = False
+        self._last_post = None
+        self._failing = False
+        self._retry = 1.0
+        self.dead = False
+        self.dropped = 0
+        self.sent = 0
+
+    def _say(self, line):
+        if self._log:
+            try:
+                self._log(line)
+            except Exception:
+                pass
+
+    def _done(self, n):
+        with self._lock:
+            self._pending = max(0, self._pending - n)
+
+    # ---- queue ----
+    def enqueue(self, event, priority=PRI_NORMAL):
+        """Queue {"embed": ..., "mention": user id or None}. Never blocks;
+        False if it was dropped."""
+        if self.dead or not self.url:
+            return False
+        item = (int(priority), event)
+        try:
+            with self._lock:
+                self._q.put_nowait(item)
+                self._pending += 1
+        except queue.Full:
+            q = self._q
+            with self._lock, q.mutex:
+                dq = q.queue
+                if len(dq) < q.maxsize:          # the sender took one meanwhile
+                    dq.append(item)
+                    q.unfinished_tasks += 1
+                    q.not_empty.notify()
+                    self._pending += 1
+                else:
+                    low = min(range(len(dq)), key=lambda i: dq[i][0])
+                    self.dropped += 1
+                    if dq[low][0] > item[0]:
+                        return False             # the new one matters least
+                    del dq[low]
+                    dq.append(item)
+        self._start()
+        return True
+
+    def _start(self):
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            t = threading.Thread(target=self._loop, daemon=True,
+                                 name="GlassMacro webhook")
+            self._thread = t
+        t.start()
+
+    def _loop(self):
+        while not self.dead:
+            try:
+                first = self._q.get(timeout=60)
+            except queue.Empty:
+                continue
+            try:
+                self._run_batch(self._gather(first, HOOK_BATCH_WAIT))
+            except Exception:
+                pass
+        self._discard()
+
+    def _gather(self, first, wait):
+        batch = [first[1]]
+        end = time.monotonic() + wait
+        while len(batch) < HOOK_MAX_EMBEDS:
+            left = 0 if self._hurry else end - time.monotonic()
+            try:
+                item = (self._q.get(timeout=min(left, 0.1)) if left > 0
+                        else self._q.get_nowait())
+            except queue.Empty:
+                if left > 0:
+                    continue
+                break
+            batch.append(item[1])
+        return batch
+
+    def _discard(self):
+        n = 0
+        while True:
+            try:
+                self._q.get_nowait()
+                n += 1
+            except queue.Empty:
+                break
+        self._done(n)
+
+    def pump(self):
+        """Send everything queued right now on the calling thread, without
+        the batching wait. Returns the statuses (tests use it)."""
+        out = []
+        while True:
+            try:
+                first = self._q.get_nowait()
+            except queue.Empty:
+                return out
+            out += self._run_batch(self._gather(first, 0))
+
+    @staticmethod
+    def _groups(events):
+        group, chars = [], 0
+        for ev in events:
+            c = embed_chars(ev["embed"])
+            if group and (len(group) >= HOOK_MAX_EMBEDS
+                          or chars + c > HOOK_MAX_CHARS):
+                yield group
+                group, chars = [], 0
+            group.append(ev)
+            chars += c
+        if group:
+            yield group
+
+    def _run_batch(self, events):
+        out = []
+        try:
+            for group in self._groups(events):
+                if self.dead:
+                    out.append("dead")
+                    break
+                out.append(self._send(build_payload(
+                    [e["embed"] for e in group],
+                    [e.get("mention") for e in group])))
+        finally:
+            self._done(len(events))
+        return out
+
+    # ---- posting ----
+    def _pace(self):
+        if self._last_post is None or self._hurry:
+            return
+        gap = HOOK_GAP - (time.monotonic() - self._last_post)
+        if gap > 0:
+            self._sleep(gap)
+
+    def _send(self, payload):
+        """'ok', 'blocked', 'dropped' or 'dead'."""
+        waits = backoffs = 0
+        while not self.dead:
+            self._pace()
+            code = self._post(payload)
+            if code == "blocked":
+                return "blocked"
+            self._last_post = time.monotonic()
+            if code in (200, 204):
+                self.sent += 1
+                if self._failing:
+                    self._failing = False
+                    self._say("webhook: reaching Discord again")
+                return "ok"
+            if code == 429:
+                waits += 1
+                if waits > HOOK_429_WAITS:
+                    return "dropped"
+                self._sleep(self._retry + 0.25)
+                continue
+            if code in (401, 403, 404):
+                self.dead = True
+                self._say(f"webhook: Discord says the link no longer works "
+                          f"({code}) - check the Discord page")
+                return "dead"
+            if 400 <= code < 500:
+                return "dropped"              # a bad message: never resent
+            # 5xx, no network, a timeout
+            if not self._failing:
+                self._failing = True
+                self._say("webhook: couldn't reach Discord - will retry")
+            if backoffs >= len(HOOK_BACKOFF) or self._hurry:
+                return "dropped"
+            self._sleep(HOOK_BACKOFF[backoffs])
+            backoffs += 1
+        return "dead"
+
+    def _post(self, payload):
+        if os.environ.get("GLASSMACRO_NO_SEND"):
+            return "blocked"
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(
+            self.url, data=json.dumps(payload).encode("utf-8"), method="POST",
+            headers={"User-Agent": HOOK_UA,
+                     "Content-Type": "application/json"})
+        send = self._transport or _http
+        try:
+            r = send(req, HOOK_TIMEOUT)
+            try:
+                code = getattr(r, "status", None) or r.getcode()
+            finally:
+                try:
+                    r.close()
+                except Exception:
+                    pass
+            return int(code)
+        except urllib.error.HTTPError as e:
+            self._retry = 1.0
+            if e.code == 429:
+                self._retry = self._retry_after(e)
+            try:
+                e.close()
+            except Exception:
+                pass
+            return int(e.code)
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _retry_after(e):
+        secs = None
+        try:
+            secs = float(json.loads(e.read().decode("utf-8"))["retry_after"])
+        except Exception:
+            try:
+                secs = float(e.headers.get("Retry-After"))
+            except Exception:
+                pass
+        return min(60.0, max(0.0, secs)) if secs is not None else 1.0
+
+    def post_now(self, payload):
+        """One message right now on the calling thread - the Discord page's
+        Send test. Still blocked by GLASSMACRO_NO_SEND."""
+        status = self._send(payload)
+        if status == "ok":
+            self._say("webhook: test message sent")
+        return status
+
+    def flush(self, timeout=2.0):
+        """Give queued alerts up to `timeout` seconds to go out (on close)."""
+        self._hurry = True
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            with self._lock:
+                left = self._pending
+            if left <= 0 or self.dead:
+                return True
+            if self._thread is None or not self._thread.is_alive():
+                break
+            time.sleep(0.05)
+        with self._lock:
+            return self._pending <= 0
+
+
+# ------------------------------------------------------- lifetime stats ---
+# stats.json: totals across every run. Written whole (tmp, fsync, swap), with
+# the previous copy kept as stats.json.bak; a damaged file is set aside, never
+# deleted. Time is added a clamped second at a time, so a clock that jumps
+# can't add hours.
+STATS_PATH = os.path.join(DATA_DIR, "stats.json")
+STATS_KEEP_DAYS = 60
+STATS_COUNTERS = ("runs", "loadouts", "rejoins", "reconnects",
+                  "roblox_reopens", "roblox_restarts", "reopen_giveups",
+                  "errors", "join_failures", "quiet_stretches",
+                  "skipped_picks", "unclean_ends")
+
+
+def new_stats():
+    st = {"v": 1, "total_secs": 0, "runs": 0, "longest_secs": 0,
+          "longest_on": ""}
+    for k in STATS_COUNTERS:
+        st.setdefault(k, 0)
+    st.update({"first_run": "", "last_run": "", "days": {}, "current": None})
+    return st
+
+
+def _num(v):
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and v == v and 0 <= v < 1e12)
+
+
+def _clean_stats(data):
+    """A loaded file in the v1 shape; anything missing or the wrong type is
+    the default."""
+    st = new_stats()
+    for k in ("total_secs", "longest_secs") + STATS_COUNTERS:
+        if _num(data.get(k)):
+            st[k] = int(data[k]) if k in STATS_COUNTERS else data[k]
+    for k in ("longest_on", "first_run", "last_run"):
+        if isinstance(data.get(k), str):
+            st[k] = data[k]
+    days = data.get("days")
+    if isinstance(days, dict):
+        st["days"] = {d: v for d, v in days.items()
+                      if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(d)) and _num(v)}
+    cur = data.get("current")
+    if cur is not None:
+        cur = cur if isinstance(cur, dict) else {}
+        st["current"] = {"start": str(cur.get("start") or ""),
+                         "secs": cur["secs"] if _num(cur.get("secs")) else 0,
+                         "flushed_at": cur["flushed_at"]
+                         if _num(cur.get("flushed_at")) else 0}
+    return st
+
+
+def save_stats(data, path=None):
+    path = path or STATS_PATH
+    try:
+        days = data.get("days")
+        if isinstance(days, dict) and len(days) > STATS_KEEP_DAYS:
+            for k in sorted(days)[:-STATS_KEEP_DAYS]:
+                del days[k]
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=1)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if os.path.exists(path):
+            try:
+                shutil.copyfile(path, path + ".bak")
+            except OSError:
+                pass
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
+def load_stats(path=None):
+    """stats.json, else stats.json.bak, else a fresh start. A damaged
+    stats.json is renamed to stats.json.corrupt-<time> so it can't overwrite
+    the good .bak. A run that never ended cleanly (crash, power cut) still
+    counts toward the longest run."""
+    path = path or STATS_PATH
+    data, corrupt = None, False
+    for p in (path, path + ".bak"):
+        try:
+            with open(p, encoding="utf-8") as fh:
+                raw = json.load(fh)
+            if not isinstance(raw, dict):
+                raise ValueError("not a stats file")
+            data = raw
+            break
+        except FileNotFoundError:
+            continue
+        except Exception:
+            if p == path:
+                corrupt = True
+    if corrupt:
+        try:
+            os.replace(path, f"{path}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}")
+        except OSError:
+            pass
+    st = _clean_stats(data) if data is not None else new_stats()
+    cur = st["current"]
+    if cur is not None:
+        if cur["secs"] > st["longest_secs"]:
+            st["longest_secs"] = cur["secs"]
+            st["longest_on"] = cur["start"][:10]
+        st["unclean_ends"] += 1
+        st["current"] = None
+        save_stats(st, path)
+    return st
+
+
+def stats_add_time(st, start, end):
+    """Add [start, end) to the total and to each local day it covers, split
+    at midnight."""
+    if not end > start:
+        return
+    st["total_secs"] = st.get("total_secs", 0) + (end - start)
+    days = st.setdefault("days", {})
+    t = start
+    while t < end:
+        lt = time.localtime(t)
+        nxt = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + 1,
+                           0, 0, 0, 0, 0, -1))
+        stop = min(end, nxt) if nxt > t else end
+        key = time.strftime("%Y-%m-%d", lt)
+        days[key] = days.get(key, 0) + (stop - t)
+        t = stop
 
 
 
@@ -1545,6 +2062,7 @@ class GlassMacro(ctk.CTk):
 
         self.cal, self.tile = load_cal()
         self.settings = load_settings()
+        self._settings_defaults()
         self.running = False
         self.watching = False
         self.calibrating = False
@@ -1576,6 +2094,21 @@ class GlassMacro(ctk.CTk):
             except Exception:
                 pass
         self.after(50, self._drain)
+
+    def _settings_defaults(self):
+        """Fill in missing settings with their defaults. Only missing keys:
+        nothing the user chose is changed, and nothing is saved here."""
+        def fill(dst, src):
+            for k, v in src.items():
+                if isinstance(v, dict):
+                    if not isinstance(dst.get(k), dict):
+                        dst[k] = {}
+                    fill(dst[k], v)
+                elif k not in dst:
+                    dst[k] = v
+        if not isinstance(self.settings, dict):
+            self.settings = {}
+        fill(self.settings, {"webhook": webhook_defaults()})
 
     # ---------------------------------------------------------------- ui --
     def _set_icon(self):
@@ -1700,6 +2233,21 @@ class GlassMacro(ctk.CTk):
         self._tab = "activity"
         self._full_log = False
         self._slider_guard = False
+        # lifetime stats and Discord alerts - only a real Start sets _live_run
+        self._live_run = False
+        self._worker = None
+        self._hour_sent = None
+        self._paused_since = None
+        self._paused_sent = False
+        self._stats = load_stats()
+        self._sender = None
+        self._flushed_at = 0
+        self._flushed_picks = 0
+        self._flushed_joins = 0
+        self._stats_saved_at = 0
+        self._run_seq = 0
+        self._end_reason, self._end_detail = "stopped", ""
+        self._updated_note = None
 
         sw, sh = screen_size()
         self._screen_ok = (sw, sh) == SUPPORTED_SCREEN
@@ -2755,6 +3303,7 @@ class GlassMacro(ctk.CTk):
                 self._run_t0 = self.session_start
                 self._was_running = True
                 self._show_playtime(now - self.session_start, live=True)
+                self._live_tick(now)
             elif self._was_running:
                 # stopped - by F8, by Stop, or the worker ending on an error
                 self._was_running = False
@@ -2767,6 +3316,12 @@ class GlassMacro(ctk.CTk):
                 self._last_run = {"secs": now - (self._run_t0 or now),
                                   "end": time.strftime("%H:%M")}
                 self._show_playtime(self._last_run["secs"], live=False)
+                if self._live_run:
+                    # a moment later, so an error line the worker queued just
+                    # before it stopped has been read first
+                    self.after(200, lambda n=now, r=self._last_run["secs"],
+                               s=self._run_seq: self._run_ended(n, ran=r,
+                                                                seq=s))
             if self.running and self._state_since:
                 self.lbl_since.configure(text="since " + time.strftime(
                     "%H:%M", time.localtime(self._state_since)))
@@ -2929,6 +3484,34 @@ class GlassMacro(ctk.CTk):
         ("started - F8 stops it", "start", "▶", "SUBTLE", "Started", ""),
     )
 
+    # Lifetime stats and Discord alerts: (needle, key), first match wins.
+    # Read by _events_from_log; counters only move during a real run.
+    EVENT_RULES = (
+        ("stopped on an error", "error"),
+        ("Roblox keeps closing", "gave_up"),
+        ("could not get into a match", "no_join"),
+        ("Roblox closed - reopening Rivals", "reopen"),
+        ("still stuck - restarting Roblox", "restart"),
+        ("connection dialog", "reconnect"),
+        ("PAUSED - Roblox is not the focused window", "paused"),
+        ("Roblox is back in front - resuming", "resumed"),
+        ("quiet for", "quiet"),
+        ("NOT the launcher there", "skipped"),
+        ("updated: GlassMacro", "updated"),
+    )
+    # event key -> the stats.json counter it bumps
+    STAT_OF = {"error": "errors", "gave_up": "reopen_giveups",
+               "no_join": "join_failures", "reopen": "roblox_reopens",
+               "restart": "roblox_restarts", "reconnect": "reconnects",
+               "quiet": "quiet_stretches", "skipped": "skipped_picks"}
+    # alert kind -> the settings group that switches it on
+    HOOK_GROUP = {"start": "start_stop", "stop": "start_stop",
+                  "closed": "start_stop", "hourly": "hourly",
+                  "error": "error", "gave_up": "stuck", "no_join": "stuck",
+                  "paused10": "paused", "reopen": "recover",
+                  "restart": "recover", "reconnect": "recover",
+                  "updated": "updated"}
+
     @staticmethod
     def _fill_n(template, text):
         if "{n}" not in template:
@@ -2946,6 +3529,7 @@ class GlassMacro(ctk.CTk):
             self._run_t0 = self.session_start or time.time()
             self._was_running = True
         if text == "stopped":
+            self._end_reason = "stopped"
             secs = time.time() - self._run_t0 if self._run_t0 else 0
             self.set_state("Stopped", f"Ran {span(secs)} · "
                            f"{self.n_picks} loadouts · "
@@ -3012,6 +3596,231 @@ class GlassMacro(ctk.CTk):
         t.see("1.0")
         if self._feed_rows == 1:
             self.empty.place_forget()
+
+    # ---- lifetime stats and Discord alerts follow the log too ----
+    # Nothing here can count or send unless _live_run is set, and only the
+    # start path of toggle_run sets it - so the tests and the screenshot tool,
+    # which only ever log lines, can never post or add to stats.json.
+    HOOK_TEXT = {
+        "paused10": ("Paused for 10 minutes",
+                     "Rivals isn't the focused window. Click into it and "
+                     "the run carries on."),
+        "gave_up": ("Roblox kept closing",
+                    "It won't be reopened again this hour."),
+        "no_join": ("Couldn't join a match",
+                    "Tried 3 times - it keeps trying."),
+        "reopen": ("Reopened Rivals",
+                   "Roblox had closed, so it was started again."),
+        "restart": ("Restarted Roblox",
+                    "Reconnecting didn't work, so Roblox was started fresh."),
+        "reconnect": ("Reconnected",
+                      "Got disconnected and clicked Reconnect."),
+        "updated": ("Updated", ""),
+    }
+
+    def _events_from_log(self, msg):
+        text = str(msg)
+        if text.startswith("webhook:"):
+            return                       # never react to our own lines
+        for needle, key in self.EVENT_RULES:
+            if needle in text:
+                break
+        else:
+            return
+        if key == "paused":
+            if self._paused_since is None:
+                self._paused_since = time.time()
+            return
+        if key == "resumed":
+            self._paused_since, self._paused_sent = None, False
+            return
+        wh = self.settings.get("webhook")
+        detail = scrub(text, wh.get("url") if isinstance(wh, dict) else None)
+        if key == "updated":
+            # logged at start-up, before any run - it goes out with the
+            # next real Start
+            self._updated_note = detail
+            return
+        if self._live_run and key in self.STAT_OF:
+            st = self._stats
+            st[self.STAT_OF[key]] = st.get(self.STAT_OF[key], 0) + 1
+        if key == "error":
+            # the worker has stopped; the stop alert carries this
+            self._end_reason, self._end_detail = "error", detail
+            return
+        if key in self.HOOK_GROUP:
+            self._hook(key, detail)
+
+    def _stats_flush(self, now, counters=False, save=False):
+        """Add the time since the last tick (0-5 s, so a clock that jumps
+        can't add hours) and, with counters/save, the new loadouts and
+        rejoins."""
+        st = self._stats
+        d = min(5.0, max(0.0, now - self._flushed_at))
+        stats_add_time(st, now - d, now)
+        self._flushed_at = now
+        cur = st.get("current")
+        if cur is not None:
+            cur["secs"] = cur.get("secs", 0) + d
+        if counters or save:
+            st["loadouts"] += max(0, self.n_picks - self._flushed_picks)
+            st["rejoins"] += max(0, self.n_joins - self._flushed_joins)
+            self._flushed_picks, self._flushed_joins = self.n_picks, self.n_joins
+        if save:
+            if cur is not None:
+                cur["flushed_at"] = now
+            save_stats(st)
+            self._stats_saved_at = now
+
+    def _live_tick(self, now):
+        """Every second of a real run: stats (saved once a minute), the
+        hourly alert and the 10-minute pause alert."""
+        if not self._live_run:
+            return
+        try:
+            due = (now - self._stats_saved_at >= 60
+                   or now < self._stats_saved_at)
+            self._stats_flush(now, save=due)
+        except Exception:
+            pass
+        try:
+            h = int((now - self.session_start) // 3600)
+            if self._hour_sent is not None and h > self._hour_sent:
+                self._hour_sent = h
+                self._hook("hourly")
+            if (self._paused_since is not None and not self._paused_sent
+                    and now - self._paused_since >= 600):
+                self._paused_sent = True
+                self._hook("paused10")
+        except Exception:
+            pass
+
+    def _run_started(self):
+        """The start path of toggle_run, once the worker is running: the only
+        place a run starts counting, and the only way alerts get armed."""
+        now = time.time()
+        if self._live_run:               # restarted before the end was seen
+            self._run_ended(now)
+        st = self._stats
+        stamp = time.strftime("%Y-%m-%d %H:%M")
+        self._run_seq += 1
+        self._live_run = True
+        self._hour_sent = 0
+        self._paused_since, self._paused_sent = None, False
+        self._end_reason, self._end_detail = "stopped", ""
+        self._flushed_at = self._stats_saved_at = now
+        self._flushed_picks, self._flushed_joins = self.n_picks, self.n_joins
+        st["runs"] = st.get("runs", 0) + 1
+        st["first_run"] = st.get("first_run") or stamp
+        st["last_run"] = stamp
+        st["current"] = {"start": stamp, "secs": 0, "flushed_at": now}
+        save_stats(st)
+        self._hook("start")
+        if self._updated_note:
+            self._hook("updated", self._updated_note)
+            self._updated_note = None
+
+    def _run_ended(self, now, kind="stop", ran=None, seq=None):
+        """A real run ended (Stop, F8, an error, or closing the app): final
+        stats, the longest run, and the stop alert."""
+        if not self._live_run or (seq is not None and seq != self._run_seq):
+            return
+        st = self._stats
+        secs = 0
+        try:
+            self._stats_flush(now, counters=True)
+            cur = st.get("current") or {}
+            secs = cur.get("secs", 0)
+            if secs > st.get("longest_secs", 0):
+                st["longest_secs"] = secs
+                st["longest_on"] = str(cur.get("start", ""))[:10]
+            st["current"] = None
+            save_stats(st)
+        except Exception:
+            pass
+        try:
+            self._hook(kind, self._end_detail,
+                       ran=secs if ran is None else ran)
+        finally:
+            self._live_run = False
+            self._hour_sent = None
+            self._paused_since, self._paused_sent = None, False
+
+    def _hook_log(self, line):
+        """The sender's 'webhook:' lines, from its own thread."""
+        self._ui(lambda: self.log(line))
+
+    def _hook(self, kind, detail="", ran=None):
+        """Queue one Discord alert - only during a real run, with alerts
+        switched on, a valid link and that kind of alert ticked."""
+        try:
+            if not self._live_run:
+                return False
+            if kind not in ("stop", "closed") and not (
+                    self._worker is not None and self._worker.is_alive()):
+                return False
+            wh = self.settings.get("webhook")
+            if not isinstance(wh, dict) or wh.get("enabled") is not True:
+                return False
+            url = normalize_hook(wh.get("url"))
+            if not url:
+                return False
+            events = wh.get("events")
+            events = events if isinstance(events, dict) else {}
+            group = self.HOOK_GROUP.get(kind)
+            if (kind == "stop" and self._end_reason == "error"
+                    and events.get("error")):
+                group = "error"
+            if not group or not events.get(group):
+                return False
+            uid = str(wh.get("user_id") or "").strip()
+            mentions = wh.get("mention")
+            mentions = mentions if isinstance(mentions, dict) else {}
+            mention = uid if (group in ("error", "stuck", "paused")
+                              and mentions.get(group)
+                              and re.fullmatch(r"\d{17,20}", uid)) else None
+            embed = self._hook_embed(kind, detail, ran)
+            if self._sender is None or self._sender.url != url:
+                self._sender = WebhookSender(url, log=self._hook_log)
+            pri = (PRI_PERIODIC if kind == "hourly" else
+                   PRI_MILESTONE if kind in ("start", "updated", "reopen",
+                                             "restart", "reconnect")
+                   else PRI_NORMAL)
+            return self._sender.enqueue({"embed": embed, "mention": mention},
+                                        pri)
+        except Exception:
+            return False
+
+    def _hook_embed(self, kind, detail, ran=None):
+        st = self._stats
+        live = time.time() - self.session_start if self.session_start else 0
+        life = ("Lifetime", span(st.get("total_secs", 0)))
+        counts = [("Loadouts", self.n_picks), ("Rejoins", self.n_joins)]
+        colour = None
+        if kind == "start":
+            title, desc = "Run started", "Playing Free For All."
+            fields = [life]
+        elif kind in ("stop", "closed"):
+            secs = ran if ran is not None else live
+            if kind == "stop" and self._end_reason == "error":
+                title, colour = "Stopped by an error", HOOK_RED
+                desc = detail or "The log says what happened."
+            elif kind == "closed":
+                title, desc = "GlassMacro was closed", "The run ended with it."
+                colour = HOOK_MUTED
+            else:
+                title, desc, colour = "Run stopped", "", HOOK_MUTED
+            fields = [("Ran", span(secs))] + counts + [life]
+        elif kind == "hourly":
+            title, desc = f"{self._hour_sent}h of playtime", "Still going."
+            fields = [("Playtime", span(live))] + counts + [life]
+        else:
+            title, desc = self.HOOK_TEXT.get(kind, (kind, ""))
+            if kind == "updated":
+                desc = detail
+            fields = [("Playtime", span(live))] if self.session_start else []
+        footer = f"{APP_NAME} {APP_VER} · run #{st.get('runs', 0)}"
+        return build_embed(kind, title, desc, colour, fields, footer)
 
     # ---- the setup guide follows the setup's own log lines ----
     def _guide_from_log(self, msg):
@@ -3142,7 +3951,7 @@ class GlassMacro(ctk.CTk):
         except Exception:
             pass
         for fn in (self._status_from_log, self._feed_from_log,
-                   self._guide_from_log):
+                   self._guide_from_log, self._events_from_log):
             try:
                 fn(msg)
             except Exception:
@@ -3679,7 +4488,12 @@ class GlassMacro(ctk.CTk):
         self.val_joins.configure(text="0")
         self._status("RUNNING", GREEN)
         self.log("started - F8 stops it")
-        threading.Thread(target=self._run_worker, daemon=True).start()
+        self._worker = threading.Thread(target=self._run_worker, daemon=True)
+        self._worker.start()
+        try:
+            self._run_started()
+        except Exception:
+            pass                      # stats and alerts never stop a run
 
     def _run_worker(self):
         picked_at = 0.0
@@ -4015,7 +4829,22 @@ class GlassMacro(ctk.CTk):
         return True
 
     def _close(self):
+        was_running = self.running
         self.running = self.watching = False
+        if getattr(self, "_live_run", False):
+            # closing mid-run is a clean end: final stats and the alert
+            try:
+                now = time.time()
+                self._run_ended(now, "closed" if was_running else "stop",
+                                ran=now - self.session_start
+                                if self.session_start else None)
+            except Exception:
+                pass
+            try:
+                if self._sender:
+                    self._sender.flush(2)
+            except Exception:
+                pass
         # remember a tuned threshold, so it does not have to be set every run
         if self.cal:
             try:

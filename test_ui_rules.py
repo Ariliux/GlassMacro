@@ -44,7 +44,7 @@ G.WarningPopup = _FakeNotifier
 
 src = open(os.path.join(HERE, "glassmacro.py"), encoding="utf-8").read()
 # the rule tables themselves do not count as somewhere the text is logged
-body = re.sub(r"(STATUS_RULES|FEED_RULES) = \(.*?\n    \)\n", "", src,
+body = re.sub(r"(STATUS_RULES|FEED_RULES|EVENT_RULES) = \(.*?\n    \)\n", "", src,
               flags=re.S)
 # lines built at runtime from pieces, exactly as the macro produces them
 RUNTIME = [
@@ -66,7 +66,7 @@ def check(ok, what):
     print(("PASS  " if ok else "FAIL  ") + what)
 
 
-for table in ("STATUS_RULES", "FEED_RULES"):
+for table in ("STATUS_RULES", "FEED_RULES", "EVENT_RULES"):
     for row in getattr(G.GlassMacro, table):
         needle = row[0]
         found = needle in body or any(needle in r for r in RUNTIME)
