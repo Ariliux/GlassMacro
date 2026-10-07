@@ -215,6 +215,39 @@ app.log("stopped")
 check("Ran 0s" in app.lbl_detail.cget("text"),
       f"an instant stop reports ~0s, not the last run "
       f"({app.lbl_detail.cget('text')!r})")
+
+# 1.1 Activity filter: a filtered view never breaks the 'All' feed
+app._set_feed_filter("Loadouts")
+app.log("  done, back to jumping")
+app.log("in the hub - joining FFA")
+check("Picked a loadout" in app.feed._textbox.get("1.0", "1.end"),
+      "Loadouts filter: the newest loadout is on top")
+check("Joining" not in app.feed._textbox.get("1.0", "end"),
+      "...and other events are left out")
+app._set_feed_filter("All")
+check("Joining Free For All" in app.feed._textbox.get("1.0", "1.end")
+      and app._feed_rows == len(app._feed_items),
+      "back on All: the newest event of any kind is on top again")
+app.log("in the hub - joining FFA")
+check("×2" in app.feed._textbox.get("1.0", "1.end"),
+      "...and repeats still merge after a filter was used")
+
+# 1.1 Log page: problem lines are coloured as they arrive
+app.log("PAUSED - Roblox is not the focused window")
+tb = app.txt._textbox
+last = int(tb.index("end-1c").split(".")[0]) - 1
+check("warn" in tb.tag_names(f"{last}.12"), "a PAUSED line is amber on the Log page")
+app._set_log_mode("Problems")
+app.log("in the hub - joining FFA")
+last = int(tb.index("end-1c").split(".")[0]) - 1
+check("hide" in tb.tag_names(f"{last}.0"), "Problems view hides an ordinary line")
+app._set_log_mode("All")
+check("hide" not in tb.tag_names(f"{last}.0"), "...and All shows it again")
+
+# 1.1 the WHILE IT RUNS switches are saved now
+app.sw_shots.toggle()
+check(G.load_settings().get("save_shots") is False,
+      "turning Save screenshots off is remembered")
 app.destroy()
 
 print(f"\n{'all passed' if not fails else f'{fails} FAILED'}")
