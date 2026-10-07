@@ -869,6 +869,8 @@ INSET, HAIRLINE, SHEEN = "#0a1019", "#172538", "#28405c"
 ACCENT_DIM, GREEN_DIM = "#0f2a3d", "#0f2a1d"
 AMBER_DIM, RED_DIM = "#2b230f", "#2a1418"
 KEYCAP_LINE = "#2c4058"
+# 1.1 sidebar: the selected page's row, and a row under the mouse
+NAV_ACTIVE, NAV_HOVER = "#142432", "#101b28"
 
 
 def blend(c1, c2, t):
@@ -1949,9 +1951,12 @@ class GlassButton(ctk.CTkFrame):
     bg_color a parent frame pushes down) straight through.
     """
 
-    def __init__(self, master, command, font, glyph_font, key_font):
-        super().__init__(master, height=46, corner_radius=12, border_width=1,
-                         fg_color=ACCENT, border_color=ACCENT)
+    def __init__(self, master, command, font, glyph_font, key_font,
+                 height=46, corner_radius=12, width=None):
+        size = {"width": width} if width else {}
+        super().__init__(master, height=height, corner_radius=corner_radius,
+                         border_width=1, fg_color=ACCENT, border_color=ACCENT,
+                         **size)
         self._command = command
         self._fill, self._hover = ACCENT, ACCENT_SOFT
         self._hovering = False
@@ -2049,6 +2054,10 @@ class GlassMacro(ctk.CTk):
         super().__init__()
         ctk.set_appearance_mode("dark")
         self.title(APP_NAME)
+        # a plain file read - before the window is sized, so a saved window
+        # size (later) can be used
+        self.settings = load_settings()
+        self._settings_defaults()
         self._fit_to_screen()
         self.configure(fg_color=BG)
         self._set_icon()
@@ -2061,8 +2070,6 @@ class GlassMacro(ctk.CTk):
         self._fs = self._fresh_fs()
 
         self.cal, self.tile = load_cal()
-        self.settings = load_settings()
-        self._settings_defaults()
         self.running = False
         self.watching = False
         self.calibrating = False
@@ -2135,20 +2142,20 @@ class GlassMacro(ctk.CTk):
             hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
             dwm = ctypes.windll.dwmapi.DwmSetWindowAttribute
             for attr, val in ((20, ctypes.c_int(1)),     # dark mode
-                              (35, ref(BG)),             # caption
+                              (35, ref(PANEL)),          # caption
                               (36, ref(SUBTLE)),         # caption text
                               (34, ref(LINE))):          # border
                 dwm(hwnd, attr, ctypes.byref(val), ctypes.sizeof(val))
         except Exception:
             pass
 
-    def _fit_to_screen(self, want_h=820, min_h=720):
-        """540x820 where it fits; shorter where it doesn't.
+    def _fit_to_screen(self, want_w=985, want_h=550):
+        """985x550 where it fits; smaller where it doesn't.
 
         A 1080p laptop at the usual 150% scaling has only about 688 logical
-        pixels above the taskbar, so a fixed 820 hung off the bottom of the
-        screen. CustomTkinter scales the size but not the position, so the
-        position is worked out in real pixels.
+        pixels above the taskbar, so the size is capped by the work area.
+        CustomTkinter scales the size but not the position, so the position
+        is worked out in real pixels.
         """
         try:
             s = ctk.ScalingTracker.get_window_scaling(self)
@@ -2161,12 +2168,13 @@ class GlassMacro(ctk.CTk):
             left, top, w, h = r.left, r.top, r.right - r.left, r.bottom - r.top
         except Exception:
             left, top, (w, h) = 0, 0, screen_size()
-        room = int(h / s) - 48               # title bar and a little air
-        height = max(560, min(want_h, room))
-        self.minsize(500, max(560, min(min_h, room)))
-        x = left + max(0, (w - round(540 * s)) // 2)
+        width = min(want_w, int(w / s) - 16)
+        height = min(want_h, int(h / s) - 48)  # title bar and a little air
+        # a 220px sidebar plus the Home page needs about 800 across
+        self.minsize(800, 500)
+        x = left + max(0, (w - round(width * s)) // 2)
         y = top + max(0, (h - round((height + 32) * s)) // 2)
-        self.geometry(f"540x{height}+{x}+{y}")
+        self.geometry(f"{width}x{height}+{x}+{y}")
 
     # ------------------------------------------------------ fonts & sizes --
     def _init_fonts(self):
@@ -2190,6 +2198,14 @@ class GlassMacro(ctk.CTk):
             self._fam_semi = self._fam
         self._fam_sym = "Segoe UI Symbol" if "Segoe UI Symbol" in fams \
             else self._fam
+        # sidebar icons: Windows 11's icon font, Windows 10's, or plain
+        # Segoe UI Symbol glyphs when neither is there
+        if "Segoe Fluent Icons" in fams:
+            self._fam_icon = "Segoe Fluent Icons"
+        elif "Segoe MDL2 Assets" in fams:
+            self._fam_icon = "Segoe MDL2 Assets"
+        else:
+            self._fam_icon = None
         self._fonts = {}
 
     def F(self, size, semi=False, bold=False, family=None):
@@ -2253,46 +2269,426 @@ class GlassMacro(ctk.CTk):
         self._screen_ok = (sw, sh) == SUPPORTED_SCREEN
         self._scaling = display_scaling()
 
-        # ---- header: gem, wordmark, version, screen ----
-        head = ctk.CTkFrame(self, fg_color="transparent", height=44)
-        head.pack(fill="x", padx=20, pady=(8, 4))
-        gem = tk.Canvas(head, width=self._px(20), height=self._px(20), bg=BG,
-                        highlightthickness=0, bd=0)
-        draw_gem(gem, 0, 0, self._px(20))
-        gem.pack(side="left", pady=10)
-        ctk.CTkLabel(head, text="Glass", text_color=ACCENT,
-                     font=self.F(15, semi=True)).pack(side="left",
-                                                      padx=(8, 0))
-        ctk.CTkLabel(head, text="Macro", text_color=TEXT,
-                     font=self.F(15, semi=True)).pack(side="left")
-        ctk.CTkLabel(head, text=APP_VER, text_color=MUTED,
-                     font=self.F(11)).pack(side="left", padx=(6, 0),
-                                           pady=(3, 0))
-        self.lbl_res = ctk.CTkLabel(head, font=self.F(11), text="")
-        self._paint_res(sw, sh, self._scaling)
-        self.lbl_res.pack(side="right")
-        self.lnk_update = ctk.CTkLabel(head, text="", text_color=ACCENT,
-                                       font=self.F(11, semi=True),
-                                       cursor="hand2")
-        self._update_url = RELEASES_URL
-        self.lnk_update.bind("<Button-1>", lambda _e: self._open_update())
+        # ---- the window: sidebar | 1px line | header / hairline / pages ----
+        self.grid_columnconfigure(2, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+        self._build_sidebar(sw, sh)
+        ctk.CTkFrame(self, width=1, height=1, fg_color=LINE, corner_radius=0
+                     ).grid(row=0, column=1, rowspan=3, sticky="ns")
+        self._build_header()
+        tk.Canvas(self, width=1, height=self._px(2), bg=HAIRLINE,
+                  highlightthickness=0, bd=0).grid(row=1, column=2,
+                                                   sticky="ew")
+        # every page is built once and stays alive; switching only raises
+        # one over the others (workers read switches and the threshold entry
+        # from these widgets, so none may ever be destroyed)
+        self.stack = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
+        self.stack.grid(row=2, column=2, sticky="nsew")
+        self.stack.grid_rowconfigure(0, weight=1)
+        self.stack.grid_columnconfigure(0, weight=1)
+        self._pages = {}
+        for key in self.PAGE_INFO:
+            page = ctk.CTkFrame(self.stack, fg_color=BG, corner_radius=0)
+            page.grid(row=0, column=0, sticky="nsew")
+            self._pages[key] = page
+        self._page = None
 
-        self.main = ctk.CTkFrame(self, fg_color="transparent")
-        self.main.pack(fill="both", expand=True, padx=20, pady=(0, 16))
+        self._build_home(self._pages["home"])
+        self._build_weapons_page(self._pages["weapons"])
+        self._build_activity(self._pages["activity"])
+        self._build_log(self._pages["log"])
+        self._build_wayback(self._pages["wayback"])
+        self._build_settings(self._pages["settings"])
+        for key in ("stats", "discord", "about"):
+            self._build_placeholder(self._pages[key], key)
 
-        self._build_hero()
-        self._build_guide()
-        self._build_weapons()
-        self._build_tabs()
-        self._build_activity()
-        self._build_settings()
-
-        self._show_tab("activity")
+        self._show_page("home" if self._ready() else "weapons")
         self._show_cal()
         self._show_ffa()
         self._show_playtime(None)
         self._tick()
         self._animate()
+
+    # ---- the window shell: sidebar, header, pages ----
+    # key: (title, header subtitle, sidebar group, icon-font glyph, fallback)
+    PAGE_INFO = {
+        "home": ("Home", "What it's doing right now",
+                 "RUN", "\ue80f", "⌂"),
+        "activity": ("Activity", "What happened, newest first",
+                     "RUN", "\ue81c", "◷"),
+        "stats": ("Stats", "Lifetime playtime and runs",
+                  "RUN", "\ue9d2", "▤"),
+        "log": ("Log", "Every line it writes, for bug reports",
+                "RUN", "\ue9f9", "≡"),
+        "weapons": ("Weapons", "Where it clicks in the weapon picker",
+                    "SETUP", "\uf272", "◎"),
+        "wayback": ("Way back", "How it gets back into Free For All",
+                    "SETUP", "\ue7a7", "↺"),
+        "discord": ("Discord", "Alerts in your own Discord channel",
+                    "ALERTS", "\uea8f", "✉"),
+        "settings": ("Settings", "How it behaves while it runs",
+                     "APP", "\ue713", "⚙"),
+        "about": ("About", f"{APP_NAME} {APP_VER}",
+                  "APP", "\ue946", "ⓘ"),
+    }
+
+    def _build_sidebar(self, sw, sh):
+        side = ctk.CTkFrame(self, width=220, fg_color=PANEL, corner_radius=0)
+        side.grid(row=0, column=0, rowspan=3, sticky="ns")
+        side.grid_propagate(False)
+        side.pack_propagate(False)
+        self.sidebar = side
+
+        # brand: gem, wordmark, version
+        brand = ctk.CTkFrame(side, fg_color="transparent", height=52)
+        brand.pack(fill="x", padx=20)
+        brand.pack_propagate(False)
+        gem = tk.Canvas(brand, width=self._px(20), height=self._px(20),
+                        bg=PANEL, highlightthickness=0, bd=0)
+        draw_gem(gem, 0, 0, self._px(20))
+        gem.pack(side="left")
+        ctk.CTkLabel(brand, text="Glass", text_color=ACCENT,
+                     font=self.F(15, semi=True)).pack(side="left",
+                                                      padx=(8, 0))
+        ctk.CTkLabel(brand, text="Macro", text_color=TEXT,
+                     font=self.F(15, semi=True)).pack(side="left")
+        ctk.CTkLabel(brand, text=APP_VER, text_color=MUTED,
+                     font=self.F(11)).pack(side="left", padx=(6, 0),
+                                           pady=(3, 0))
+
+        # footer, packed before the nav so a short window squeezes the nav
+        # and never pushes the screen line or the update link off the end
+        foot = ctk.CTkFrame(side, fg_color="transparent", height=44)
+        foot.pack(side="bottom", fill="x")
+        foot.pack_propagate(False)
+        ctk.CTkFrame(foot, width=1, height=1, fg_color=HAIRLINE,
+                     corner_radius=0).pack(side="top", fill="x", padx=14)
+        self._side_foot = foot
+        self.lbl_res = ctk.CTkLabel(foot, font=self.F(11), text="",
+                                    anchor="w", justify="left",
+                                    wraplength=184, height=16)
+        self._paint_res(sw, sh, self._scaling)
+        self.lbl_res.pack(side="left", padx=20)
+        self.lnk_update = ctk.CTkLabel(foot, text="", text_color=ACCENT,
+                                       font=self.F(11, semi=True),
+                                       cursor="hand2")
+        self._update_url = RELEASES_URL
+        self.lnk_update.bind("<Button-1>", lambda _e: self._open_update())
+
+        nav = ctk.CTkFrame(side, fg_color="transparent")
+        nav.pack(fill="both", expand=True)
+        self._nav = {}
+        group = None
+        icon_font = self.F(14, family=self._fam_icon or self._fam_sym)
+        for key, (title, _sub, grp, glyph, alt) in self.PAGE_INFO.items():
+            if grp != group:
+                ctk.CTkLabel(nav, text=grp, text_color=MUTED, anchor="w",
+                             font=self.F(10, semi=True), height=14
+                             ).pack(fill="x", padx=22,
+                                    pady=(0 if group is None else 8, 4))
+                group = grp
+            row = ctk.CTkFrame(nav, height=32, corner_radius=8,
+                               fg_color="transparent")
+            row.pack(fill="x", padx=10, pady=1)
+            row.pack_propagate(False)
+            icon = ctk.CTkLabel(row, text=glyph if self._fam_icon else alt,
+                                width=20, height=20, text_color=SUBTLE,
+                                font=icon_font)
+            icon.pack(side="left", padx=(12, 0))
+            lbl = ctk.CTkLabel(row, text=title, text_color=SUBTLE,
+                               font=self.F(13), anchor="w", height=20)
+            lbl.pack(side="left", padx=(10, 0))
+            for w in (row, icon, lbl):
+                w.bind("<Enter>", lambda _e, k=key: self._nav_hover(k, True),
+                       add="+")
+                w.bind("<Leave>", lambda _e, k=key: self._nav_hover(k, False),
+                       add="+")
+                w.bind("<ButtonRelease-1>",
+                       lambda _e, k=key: self._nav_click(k), add="+")
+                try:
+                    w.configure(cursor="hand2")
+                except Exception:
+                    pass
+            self._nav[key] = {"row": row, "icon": icon, "label": lbl,
+                              "hover": False, "painted": None}
+        # the 3x16 bar beside the selected row. Plain Tk: place() will not
+        # size a CustomTkinter widget
+        self._nav_ind = tk.Frame(nav, bg=ACCENT, bd=0, highlightthickness=0)
+
+    def _nav_inside(self, key):
+        row = self._nav[key]["row"]
+        x, y = self.winfo_pointerxy()
+        rx, ry = row.winfo_rootx(), row.winfo_rooty()
+        return (rx <= x < rx + row.winfo_width()
+                and ry <= y < ry + row.winfo_height())
+
+    def _nav_hover(self, key, on):
+        # moving from the row onto its own label fires Leave too
+        if not on and self._nav_inside(key):
+            return
+        self._nav[key]["hover"] = on
+        self._paint_nav()
+
+    def _nav_click(self, key):
+        if self._nav_inside(key):
+            self._show_page(key)
+
+    def _paint_nav(self):
+        for key, n in self._nav.items():
+            on = key == self._page
+            fill = (NAV_ACTIVE if on else
+                    NAV_HOVER if n["hover"] else "transparent")
+            if n["painted"] == (on, fill):
+                continue
+            n["painted"] = (on, fill)
+            n["row"].configure(fg_color=fill)
+            n["icon"].configure(text_color=ACCENT if on else SUBTLE)
+            n["label"].configure(text_color=TEXT if on else SUBTLE,
+                                 font=self.F(13, semi=on))
+        if self._page in self._nav:
+            self._nav_ind.place(in_=self._nav[self._page]["row"], x=0,
+                                rely=0.5, anchor="w", width=self._px(3),
+                                height=self._px(16))
+            self._nav_ind.lift()
+
+    def _build_header(self):
+        head = ctk.CTkFrame(self, height=56, fg_color=PANEL, corner_radius=0)
+        head.grid(row=0, column=2, sticky="ew")
+        head.grid_propagate(False)
+        head.pack_propagate(False)
+        self.header = head
+        titles = ctk.CTkFrame(head, fg_color="transparent")
+        titles.pack(side="left", padx=(24, 0))
+        self.lbl_title = ctk.CTkLabel(titles, text="", text_color=TEXT,
+                                      font=self.F(16, semi=True), anchor="w",
+                                      height=22)
+        self.lbl_title.pack(fill="x")
+        self.lbl_sub = ctk.CTkLabel(titles, text="", text_color=MUTED,
+                                    font=self.F(11), anchor="w", height=16)
+        self.lbl_sub.pack(fill="x")
+
+        # right to left: Start/Stop, the pin, the state pill
+        self.btn_run = GlassButton(head, self._run_clicked,
+                                   font=self.F(13, semi=True),
+                                   glyph_font=self.F(10, family=self._fam_sym),
+                                   key_font=self.F(10, semi=True,
+                                                   family="Consolas"),
+                                   height=36, corner_radius=10, width=156)
+        self.btn_run.pack(side="right", padx=(0, 16))
+        self.btn_pin = ctk.CTkButton(
+            head, text="", width=34, height=34, corner_radius=10,
+            fg_color="transparent", hover_color=CARD_HI, border_width=1,
+            border_color=LINE, text_color=SUBTLE,
+            font=self.F(13, family=self._fam_icon or self._fam_sym),
+            command=self._toggle_pin)
+        self.btn_pin.pack(side="right", padx=(0, 10))
+        self.pill = ctk.CTkFrame(head, height=26, corner_radius=13,
+                                 border_width=1, fg_color=PANEL,
+                                 border_color=LINE)
+        self.pill.pack(side="right", padx=(0, 10))
+        d, r = self._px(10), self._px(4)
+        self.pill_dot = tk.Canvas(self.pill, width=d, height=d, bg=PANEL,
+                                  highlightthickness=0, bd=0)
+        self.pill_dot.pack(side="left", padx=(10, 5))
+        self._pill_core = self.pill_dot.create_oval(d / 2 - r, d / 2 - r,
+                                                    d / 2 + r, d / 2 + r,
+                                                    fill=MUTED, outline="")
+        self.lbl_pill = ctk.CTkLabel(self.pill, text="Idle",
+                                     text_color=SUBTLE, height=18,
+                                     font=self.F(11, semi=True))
+        self.lbl_pill.pack(side="left", padx=(0, 12), pady=4)
+        self._pill_painted = None
+        self._paint_pin()
+        if self.settings.get("on_top"):
+            self._apply_topmost()
+
+    def _show_page(self, key):
+        page = self._pages.get(key)
+        if page is None:
+            return
+        self._page = key
+        self._full_log = key == "log"      # log() follows the end only here
+        if key in ("activity", "settings"):
+            self._tab = key
+        page.lift()
+        title, sub = self.PAGE_INFO[key][:2]
+        self.lbl_title.configure(text=title)
+        self.lbl_sub.configure(text=sub)
+        self._paint_nav()
+        if key == "log":
+            try:
+                self.txt.see("end")
+            except Exception:
+                pass
+
+    def _show_tab(self, key):
+        """The 1.0 tab names, still used by render_states.py."""
+        self._show_page("settings" if key == "settings" else "activity")
+        self._tab = key
+
+    def _paint_pill(self):
+        """Idle / Running / Paused... worked out fresh from the state the
+        card already shows, so the two can never disagree."""
+        try:
+            if getattr(self, "_updating", False):
+                text, colour = "Updating", ACCENT
+            elif self.calibrating:
+                text, colour = "Setting up · F8", ACCENT
+            elif self.watching:
+                text, colour = "Live test", ACCENT
+            elif self._run_mode == "RUNNING" and self._state_title == "Paused":
+                text, colour = "Paused", AMBER
+            elif self._run_mode == "RUNNING" and self._dot_colour in (AMBER,
+                                                                      RED):
+                text, colour = "Recovering", AMBER
+            elif self._run_mode == "RUNNING":
+                text = ("Running · " + span(time.time()
+                                                 - self.session_start)
+                        if self.session_start else "Running")
+                colour = GREEN
+            elif not self._ready():
+                text, colour = "Setup needed", AMBER
+            else:
+                text, colour = "Idle", None
+            if colour is None:
+                fill, border, dot, fg = PANEL, LINE, MUTED, SUBTLE
+            else:
+                fill, border = blend(PANEL, colour, 0.10), blend(PANEL, colour,
+                                                                0.40)
+                dot, fg = colour, colour
+            if self._pill_painted == (text, colour):
+                return
+            self._pill_painted = (text, colour)
+            self.pill.configure(fg_color=fill, border_color=border)
+            self.pill_dot.configure(bg=fill)
+            self.pill_dot.itemconfigure(self._pill_core, fill=dot)
+            self.lbl_pill.configure(text=text, text_color=fg)
+        except Exception:
+            pass
+
+    def _toggle_pin(self):
+        self.settings["on_top"] = not self.settings.get("on_top", False)
+        save_settings(self.settings)
+        self._apply_topmost()
+        self._paint_pin()
+
+    def _apply_topmost(self):
+        """Keep on top only while idle: over fullscreen Rivals the macro's
+        clicks would land on this window and pause the run."""
+        try:
+            self.attributes("-topmost", bool(self.settings.get("on_top")
+                                             and not self.running))
+        except Exception:
+            pass
+
+    def _paint_pin(self):
+        on = bool(self.settings.get("on_top"))
+        if self._fam_icon:
+            glyph = "\ue840" if on else "\ue718"
+        else:
+            glyph = "▲" if on else "△"
+        self.btn_pin.configure(text=glyph,
+                               text_color=ACCENT if on else SUBTLE,
+                               border_color=ACCENT if on else LINE,
+                               fg_color=ACCENT_DIM if on else "transparent")
+
+    def _run_clicked(self):
+        """The header button. F8 calls toggle_run directly."""
+        self.toggle_run()
+        if not self._ready():
+            self._show_page("weapons")
+
+    # ---- pages ----
+    def _scroll_page(self, page):
+        """A scrolling page: a CTkScrollableFrame INSIDE the plain page
+        frame (raising a scrollable frame itself does not work)."""
+        sf = ctk.CTkScrollableFrame(page, fg_color="transparent",
+                                    scrollbar_button_color=LINE,
+                                    scrollbar_button_hover_color=MUTED)
+        sf.pack(fill="both", expand=True, padx=(14, 4), pady=(0, 8))
+        return sf
+
+    def _build_home(self, page):
+        body = ctk.CTkFrame(page, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=20, pady=16)
+        body.grid_columnconfigure(0, weight=1)
+        self._home = body
+        self._build_hero(body)
+        self._build_weapons(body)
+        # until setup is done Home points at the Weapons page instead
+        self.cta = self._card(body)
+        self._sheen(self.cta)
+        inner = ctk.CTkFrame(self.cta, fg_color="transparent")
+        inner.pack(fill="x", padx=18, pady=18)
+        ctk.CTkLabel(inner, text="Set up your weapons", text_color=TEXT,
+                     font=self.F(18, semi=True), height=24, anchor="w"
+                     ).pack(fill="x")
+        cta_text = ctk.CTkLabel(
+            inner, text=("Three hovers in the weapon picker, about 30 "
+                         "seconds. Start works once that's done."),
+            text_color=SUBTLE, font=self.F(12), anchor="w", justify="left",
+            wraplength=600, height=18)
+        cta_text.pack(fill="x", pady=(4, 0))
+        self._rewrap_on(inner, (cta_text,))
+        ctk.CTkButton(inner, text="Go to Weapons  ›", width=180,
+                      height=40, corner_radius=12, fg_color=ACCENT,
+                      hover_color=ACCENT_SOFT, text_color=INK,
+                      font=self.F(13, semi=True),
+                      command=lambda: self._show_page("weapons")
+                      ).pack(anchor="w", pady=(14, 0))
+
+    def _build_weapons_page(self, page):
+        sf = self._scroll_page(page)
+        self._weap_scroll = sf
+        self._build_guide(sf)
+        self.guide.pack(fill="x", padx=(6, 10), pady=(16, 0))
+        self._build_detection(sf)
+
+    def _build_log(self, page):
+        wrap = ctk.CTkFrame(page, fg_color="transparent")
+        wrap.pack(fill="both", expand=True, padx=20, pady=16)
+        ctk.CTkLabel(wrap, text="Every line, oldest first · also saved "
+                                "to log.txt",
+                     text_color=MUTED, font=self.F(11), height=16
+                     ).pack(side="bottom", pady=(8, 0))
+        box = ctk.CTkFrame(wrap, fg_color=PANEL, corner_radius=14,
+                           border_width=1, border_color=LINE)
+        box.pack(fill="both", expand=True)
+        # the raw log - every line, timestamped, for bug reports
+        self.txt = ctk.CTkTextbox(box, fg_color=PANEL, text_color="#c3cfdd",
+                                  border_width=0, wrap="word",
+                                  font=ctk.CTkFont(family="Consolas", size=11),
+                                  scrollbar_button_color=LINE,
+                                  scrollbar_button_hover_color=MUTED)
+        self.txt.tag_config("ts", foreground=MUTED)
+        self.txt.tag_config("top", foreground="#d5e0ec")
+        self.txt.tag_config("sub", foreground=SUBTLE)
+        self.txt.configure(state="disabled")
+        self.txt.pack(fill="both", expand=True, padx=8, pady=6)
+
+    PLACEHOLDER = {
+        "stats": "Lifetime playtime, runs, loadouts and a 14-day chart.",
+        "discord": ("Alerts in your own Discord channel when a run starts, "
+                    "stops or gets stuck. Off until you paste a webhook "
+                    "link."),
+        "about": (f"{APP_NAME} {APP_VER} · made for 1920×1080 "
+                  f"· F8 starts and stops."),
+    }
+
+    def _build_placeholder(self, page, key):
+        card = self._card(page)
+        card.pack(fill="x", padx=20, pady=16)
+        self._sheen(card)
+        inner = ctk.CTkFrame(card, fg_color="transparent")
+        inner.pack(fill="x", padx=18, pady=18)
+        ctk.CTkLabel(inner, text="Coming in this build", text_color=TEXT,
+                     font=self.F(15, semi=True), height=22, anchor="w"
+                     ).pack(fill="x")
+        note = ctk.CTkLabel(inner, text=self.PLACEHOLDER.get(key, ""),
+                            text_color=SUBTLE, font=self.F(12), anchor="w",
+                            justify="left", wraplength=600, height=18)
+        note.pack(fill="x", pady=(4, 0))
+        self._rewrap_on(inner, (note,))
 
     # ---- the status card ----
     def _card(self, parent, **kw):
@@ -2308,8 +2704,8 @@ class GlassMacro(ctk.CTk):
         line.place(x=self._px(18), y=self._px(1), relwidth=1.0,
                    width=-self._px(36))
 
-    def _build_hero(self):
-        self.hero = self._card(self.main)
+    def _build_hero(self, parent):
+        self.hero = self._card(parent)
         self._sheen(self.hero)
         body = ctk.CTkFrame(self.hero, fg_color="transparent")
         body.pack(fill="x", padx=18, pady=18)
@@ -2384,13 +2780,6 @@ class GlassMacro(ctk.CTk):
         self.val_picks = self._counter(strip, 2, "LOADOUTS")
         self.val_joins = self._counter(strip, 4, "REJOINS")
 
-        self.btn_run = GlassButton(body, self.toggle_run,
-                                   font=self.F(14, semi=True),
-                                   glyph_font=self.F(11, family=self._fam_sym),
-                                   key_font=self.F(11, semi=True,
-                                                   family="Consolas"))
-        self.btn_run.pack(fill="x", pady=(16, 0))
-
     def _counter(self, parent, col, caption):
         f = ctk.CTkFrame(parent, fg_color="transparent")
         f.grid(row=0, column=col, sticky="nw", padx=16, pady=12)
@@ -2409,8 +2798,8 @@ class GlassMacro(ctk.CTk):
         ("Your first loadout slot", "The first slot along the top."),
     )
 
-    def _build_guide(self):
-        self.guide = self._card(self.main)
+    def _build_guide(self, parent):
+        self.guide = self._card(parent)
         self._sheen(self.guide)
         body = ctk.CTkFrame(self.guide, fg_color="transparent")
         body.pack(fill="x", padx=18, pady=18)
@@ -2551,8 +2940,8 @@ class GlassMacro(ctk.CTk):
                        font=self._tkfont(9, semi=True))
 
     # ---- weapons row (once set up) ----
-    def _build_weapons(self):
-        self.weap = self._card(self.main, corner_radius=14)
+    def _build_weapons(self, parent):
+        self.weap = self._card(parent, corner_radius=14)
         inner = ctk.CTkFrame(self.weap, fg_color="transparent")
         inner.pack(fill="x", padx=14, pady=12)
         self.weap_tile = ctk.CTkLabel(inner, text="✓", width=30,
@@ -2576,55 +2965,15 @@ class GlassMacro(ctk.CTk):
                                       font=self.F(12), command=self.calibrate)
         self.btn_redo.pack(side="right")
 
-    # ---- tabs ----
-    def _build_tabs(self):
-        self.tabbar = ctk.CTkFrame(self.main, fg_color="transparent")
-        self.tabbar.pack(fill="x", pady=(20, 0))
-        row = ctk.CTkFrame(self.tabbar, fg_color="transparent")
-        row.pack(fill="x", padx=4)
-        self._tab_labels = {}
-        for key, text in (("activity", "Activity"), ("settings", "Settings")):
-            col = ctk.CTkFrame(row, fg_color="transparent")
-            col.pack(side="left", padx=(0, 22))
-            lbl = ctk.CTkLabel(col, text=text, font=self.F(13, semi=True),
-                               text_color=MUTED, height=20, cursor="hand2")
-            lbl.pack()
-            under = ctk.CTkFrame(col, width=1, height=2, corner_radius=1,
-                                 fg_color="transparent")
-            under.pack(fill="x", pady=(6, 0))
-            lbl.bind("<Button-1>", lambda _e, k=key: self._show_tab(k))
-            self._tab_labels[key] = (lbl, under)
-        self.lnk_log = ctk.CTkLabel(row, text="Full log ›",
-                                    text_color=MUTED, font=self.F(11),
-                                    height=20, cursor="hand2")
-        self.lnk_log.pack(side="right", anchor="n")
-        self.lnk_log.bind("<Button-1>", lambda _e: self._toggle_full_log())
-        ctk.CTkFrame(self.tabbar, height=1, fg_color=HAIRLINE,
-                     corner_radius=0).pack(fill="x", padx=4)
-
-    def _show_tab(self, key):
-        self._tab = key
-        for k, (lbl, under) in self._tab_labels.items():
-            on = k == key
-            lbl.configure(text_color=TEXT if on else MUTED)
-            under.configure(fg_color=ACCENT if on else "transparent")
-        if key == "activity":
-            self.set_page.pack_forget()
-            self.act_page.pack(fill="both", expand=True, pady=(12, 0))
-            self.lnk_log.pack(side="right", anchor="n")
-        else:
-            self.act_page.pack_forget()
-            self.lnk_log.pack_forget()
-            self.set_page.pack(fill="both", expand=True, pady=(8, 0))
-
     # ---- activity: a readable feed, with the raw log one click away ----
-    def _build_activity(self):
-        self.act_page = ctk.CTkFrame(self.main, fg_color="transparent")
+    def _build_activity(self, page):
+        self.act_page = ctk.CTkFrame(page, fg_color="transparent")
+        self.act_page.pack(fill="both", expand=True, padx=20, pady=16)
         # packed first, from the bottom, so a short window squeezes the feed
         # rather than pushing this line off the end
         self.lbl_foot = ctk.CTkLabel(self.act_page,
                                      text="Newest first · every detail "
-                                          "is in Full log",
+                                          "is on the Log page",
                                      text_color=MUTED, font=self.F(11),
                                      height=16)
         self.lbl_foot.pack(side="bottom", pady=(8, 0))
@@ -2672,17 +3021,6 @@ class GlassMacro(ctk.CTk):
         self.empty.place(relx=0.5, rely=0.46, anchor="center")
         box.bind("<Configure>", self._fit_empty, add="+")
 
-        # the raw log - every line, timestamped, for bug reports
-        self.txt = ctk.CTkTextbox(box, fg_color=PANEL, text_color="#c3cfdd",
-                                  border_width=0, wrap="word",
-                                  font=ctk.CTkFont(family="Consolas", size=11),
-                                  scrollbar_button_color=LINE,
-                                  scrollbar_button_hover_color=MUTED)
-        self.txt.tag_config("ts", foreground=MUTED)
-        self.txt.tag_config("top", foreground="#d5e0ec")
-        self.txt.tag_config("sub", foreground=SUBTLE)
-        self.txt.configure(state="disabled")
-
     def _fit_empty(self, e):
         """In a short box (setup guide showing, small window) the gem would
         overlap the border - keep just the words."""
@@ -2694,29 +3032,13 @@ class GlassMacro(ctk.CTk):
             self._empty_gem.pack(pady=(0, 10), before=self._empty_title)
 
     def _toggle_full_log(self):
-        self._full_log = not self._full_log
-        if self._full_log:
-            self.feed.pack_forget()
-            self.empty.place_forget()
-            self.txt.pack(fill="both", expand=True, padx=8, pady=6)
-            self.txt.see("end")
-            self.lnk_log.configure(text="‹ Activity")
-            self.lbl_foot.configure(text="Every line, oldest first · "
-                                         "also saved to log.txt")
-        else:
-            self.txt.pack_forget()
-            self.feed.pack(fill="both", expand=True, padx=8, pady=6)
-            if not self._feed_rows:
-                self.empty.place(relx=0.5, rely=0.46, anchor="center")
-            self.lnk_log.configure(text="Full log ›")
-            self.lbl_foot.configure(text="Newest first · every detail "
-                                         "is in Full log")
+        """1.0's 'Full log' link, still used by render_states.py: Log and
+        Activity swap."""
+        self._show_page("activity" if self._page == "log" else "log")
 
     # ---- settings: grouped cards ----
-    def _build_settings(self):
-        self.set_page = ctk.CTkScrollableFrame(
-            self.main, fg_color="transparent", scrollbar_button_color=LINE,
-            scrollbar_button_hover_color=MUTED)
+    def _build_settings(self, page):
+        self.set_page = self._scroll_page(page)
         sp = self.set_page
 
         self._group(sp, "WHILE IT RUNS")
@@ -2741,6 +3063,9 @@ class GlassMacro(ctk.CTk):
             first=True, on=self.settings.get("check_updates", True),
             command=self._update_switched)
 
+        self._build_files(sp)
+
+    def _build_detection(self, sp):
         self._group(sp, "DETECTION")
         card = self._card(sp, corner_radius=14)
         card.pack(fill="x")
@@ -2783,6 +3108,9 @@ class GlassMacro(ctk.CTk):
             font=ctk.CTkFont(family="Consolas", size=11))
         self.lbl_score.pack(fill="x", padx=10, pady=5)
 
+    def _build_wayback(self, page):
+        sp = ctk.CTkFrame(page, fg_color="transparent")
+        sp.pack(fill="x", padx=20, pady=(0, 16))
         self._group(sp, "WAY BACK INTO FREE FOR ALL")
         card = self._card(sp, corner_radius=14)
         card.pack(fill="x")
@@ -2801,6 +3129,7 @@ class GlassMacro(ctk.CTk):
         self.btn_ffa = self._ghost(inner, "Re-teach", self.teach_ffa)
         self.btn_ffa.pack(side="right")
 
+    def _build_files(self, sp):
         self._group(sp, "FILES")
         card = self._card(sp, corner_radius=14)
         card.pack(fill="x")
@@ -3011,7 +3340,7 @@ class GlassMacro(ctk.CTk):
         if found and version_tuple(found[0]) > version_tuple(APP_VER):
             self._ui(lambda f=found, i=info: self._show_update(*f, info=i))
             return True                   # one notice is enough
-        # one quiet line in Full log / log.txt, so "did it even check?" has
+        # one quiet line on the Log page / log.txt, so "did it even check?" has
         # an answer - the feed ignores it
         note = (f"update check: up to date (latest on GitHub is {found[0]})"
                 if found
@@ -3025,7 +3354,7 @@ class GlassMacro(ctk.CTk):
                                      "zip": None, "sha256": None}
         self.lnk_update.configure(text=f"Update {version} available \u203a")
         self.lbl_res.pack_forget()
-        self.lnk_update.pack(side="right")
+        self.lnk_update.pack(side="left", padx=20)
         self.log(f"update available: GlassMacro {version}")
         self._ask_update()
 
@@ -3205,6 +3534,7 @@ class GlassMacro(ctk.CTk):
         self.lbl_detail.configure(text=detail)
         self._dot_colour = colour or MUTED
         self._paint_dot()
+        self._paint_pill()
 
     def _status(self, text, colour):
         """RUNNING / IDLE / WATCHING. Only the dot shows it now - the old
@@ -3214,6 +3544,7 @@ class GlassMacro(ctk.CTk):
         if text != "RUNNING":
             self._dot_colour = colour if text == "WATCHING" else MUTED
         self._paint_dot()
+        self._paint_pill()
 
     def _pulsing(self):
         return (self._run_mode in ("RUNNING", "WATCHING")
@@ -3308,6 +3639,7 @@ class GlassMacro(ctk.CTk):
                 # stopped - by F8, by Stop, or the worker ending on an error
                 self._was_running = False
                 keep_awake(False)
+                self._apply_topmost()
                 if getattr(self, "_update_yes_pending", False):
                     self._update_yes_pending = False
                     self.after(1500, self._start_update)
@@ -3332,6 +3664,7 @@ class GlassMacro(ctk.CTk):
                 # when a key arrives, so a clock reaching 0:00 would be a lie
                 self._guide_status("Esc cancels · take your time",
                                    SUBTLE)
+            self._paint_pill()
         except Exception:
             pass
         self.after(1000, self._tick)
@@ -3343,7 +3676,7 @@ class GlassMacro(ctk.CTk):
     # detail is filled with the first number in the log line.
     STATUS_RULES = (
         ("stopped on an error", "Stopped on an error",
-         "The full log says what happened.", "RED", None),
+         "The Log page says what happened.", "RED", None),
         ("Roblox closed - reopening Rivals", "Reopening Rivals",
          "Roblox closed, so it's starting Rivals again.", "AMBER", None),
         ("Roblox keeps closing", "Roblox keeps closing",
@@ -3420,10 +3753,10 @@ class GlassMacro(ctk.CTk):
 
     # The activity feed: (needle, key, glyph, colour, title, sub). A sub may
     # use {n} like above. Lines that match nothing stay out of the feed - they
-    # are still in Full log and log.txt.
+    # are still on the Log page and in log.txt.
     FEED_RULES = (
         ("stopped on an error", "err", "×", "RED",
-         "Stopped on an error", "see Full log"),
+         "Stopped on an error", "see the Log page"),
         ("Roblox closed - reopening Rivals", "reopen", "!", "AMBER",
          "Reopened Rivals", "Roblox had closed"),
         ("Roblox keeps closing", "reopenstop", "×", "RED",
@@ -3470,7 +3803,7 @@ class GlassMacro(ctk.CTk):
         ("update failed:", "updfail", "!", "AMBER", "Update didn't work",
          "nothing changed - try the download page"),
         ("update available:", "update", "\u2191", "ACCENT",
-         "Update available", "the link is at the top"),
+         "Update available", "the link is bottom-left"),
         ("calibration saved", "setup", "✓", "GREEN", "Weapons set up",
          ""),
         ("saved the way back", "way", "✓", "GREEN", "Way back saved",
@@ -3862,7 +4195,7 @@ class GlassMacro(ctk.CTk):
             g.update(step=0, done=set(), t0=0.0)
             self._setup_active = False
             self._guide_status("Something went wrong · nothing saved. "
-                               "Full log has the details.", RED)
+                               "The Log page has the details.", RED)
         else:
             return
         self._paint_guide()
@@ -3917,19 +4250,20 @@ class GlassMacro(ctk.CTk):
                                         "start setup", fg_color=ACCENT)
 
     def _refresh_layout(self):
-        """The guide takes the status card's place until setup is done."""
+        """Home shows the status card once setup is done; until then a card
+        pointing at the Weapons page, where the guide lives."""
         want = self._setup_active or not self._ready()
         if want == self._guide_visible:
             return
         self._guide_visible = want
         if want:
-            self.hero.pack_forget()
-            self.weap.pack_forget()
-            self.guide.pack(fill="x", before=self.tabbar)
+            self.hero.grid_remove()
+            self.weap.grid_remove()
+            self.cta.grid(row=0, column=0, sticky="ew")
         else:
-            self.guide.pack_forget()
-            self.hero.pack(fill="x", before=self.tabbar)
-            self.weap.pack(fill="x", pady=(12, 0), before=self.tabbar)
+            self.cta.grid_remove()
+            self.hero.grid(row=0, column=0, sticky="ew")
+            self.weap.grid(row=1, column=0, sticky="ew", pady=(12, 0))
 
     def log(self, msg):
         stamp = time.strftime("%H:%M:%S")
@@ -4031,7 +4365,7 @@ class GlassMacro(ctk.CTk):
                         glyph_color=INK, border_color=ACCENT,
                         key_fg="#4ab8ec", key_border="#2b93d1", key_text=INK)
         else:
-            b.configure(text="Set up weapons first", glyph="!",
+            b.configure(text="Set up first", glyph="!",
                         fg_color=CARD_HI, hover_color=LINE, text_color=MUTED,
                         glyph_color=AMBER, border_color=LINE, key_fg=PANEL,
                         key_border=KEYCAP_LINE, key_text=MUTED)
@@ -4059,6 +4393,7 @@ class GlassMacro(ctk.CTk):
         if not self.running and self._ready() and not self._setup_active:
             self.set_state("Ready", "Open Rivals and press F8, or hit Start.",
                            MUTED)
+        self._paint_pill()
 
     # ----------------------------------------------------------- actions --
     def _hotkey(self):
@@ -4075,6 +4410,7 @@ class GlassMacro(ctk.CTk):
             self.log("stop the macro first")
             return
         self.calibrating = True
+        self._show_page("weapons")
         self.btn_cal.configure(text="Waiting for F8...", state="disabled")
         self.log("hover RANDOM and press F8")
         threading.Thread(target=self._calibrate_worker, daemon=True).start()
@@ -4158,6 +4494,7 @@ class GlassMacro(ctk.CTk):
             self.log("stop the macro first")
             return
         self.calibrating = True
+        self._show_page("wayback")
         self.btn_ffa.configure(text="Waiting for F8...", state="disabled")
         self.log("from the LOBBY: hover PLAY and press F8 (then click it "
                  "yourself and carry on)")
@@ -4491,6 +4828,7 @@ class GlassMacro(ctk.CTk):
         self._fs = self._fresh_fs()
         self._warn_display()
         self.running = True
+        self._apply_topmost()        # the pin would catch the macro's clicks
         keep_awake(True)
         self._paint_run()
         self.session_start = time.time()
