@@ -15,7 +15,7 @@ tried TinyTask first, but it kept picking the wrong weapon, because the weapon g
 around whenever there's an event. So I built my own macro that actually *looks* at the
 screen instead of clicking fixed spots.
 
-It got me the wrap. I've left it running for 10+ hours straight, so now I'm sharing it.
+It got me the wrap. I've left it running for 10+ hours straight. 
 
 ## What it does
 
