@@ -4,10 +4,6 @@
 
 <h1 align="center">GlassMacro</h1>
 
-<p align="center">
-  <img src="docs/screenshot.png" width="420" alt="GlassMacro window">
-</p>
-
 ## Why I made this
 
 I wanted the **Glass wrap** in Rivals, and grinding FFA playtime by hand takes forever. I
