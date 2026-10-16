@@ -194,6 +194,11 @@ The app ends up in `dist\GlassMacro\`. `python make_icon.py` redraws the icon.
 `python test_detectors.py` checks the screen detection against real screenshots, which you
 need to provide yourself because they aren't in the repo.
 
+## My other macros
+
+- **[MayhemMacro](https://github.com/Ariliux/MayhemMacro)**: an AFK macro for **Block Mayhem X**.
+  Anti-AFK, auto rejoin, rare block alerts and auto world vote.
+
 ## License
 
 [MIT](LICENSE). Do what you want with it, just keep the license file.
