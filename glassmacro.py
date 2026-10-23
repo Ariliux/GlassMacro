@@ -399,6 +399,69 @@ def focused():
     return bool(h) and _user32.GetForegroundWindow() == h
 
 
+# Covered by another window, the macro can only sit on "Paused" (a whole
+# night was lost like that). So bring Roblox back - but only once you've left
+# the keys this long, so it never jumps over your typing, and at most this often.
+KEEP_FRONT_IDLE = 60.0
+KEEP_FRONT_EVERY = 120.0
+
+
+class _LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+
+def user_idle_seconds():
+    """Seconds since the last key or mouse input on this PC (0 if unknown)."""
+    li = _LASTINPUTINFO(ctypes.sizeof(_LASTINPUTINFO), 0)
+    try:
+        if not _user32.GetLastInputInfo(ctypes.byref(li)):
+            return 0.0
+        now = ctypes.windll.kernel32.GetTickCount()
+        return ((now - li.dwTime) & 0xFFFFFFFF) / 1000.0
+    except Exception:
+        return 0.0
+
+
+def bring_roblox_front():
+    """Put Roblox in front (restoring it if minimised). Windows only lets the
+    program that got the latest input change the front window, so tap ALT
+    first; if that isn't enough, join the two windows' input queues for a
+    moment. Never Alt+Tab (that can land on any window). True if it worked."""
+    h = roblox_hwnd()
+    if not h:
+        return False
+    try:
+        if _user32.GetForegroundWindow() == h:
+            return True
+        if _user32.IsIconic(h):
+            _user32.ShowWindow(h, 9)                     # SW_RESTORE
+        _user32.keybd_event(0x12, 0, 0, 0)               # ALT down
+        _user32.keybd_event(0x12, 0, 2, 0)               # ALT up
+        _user32.SetForegroundWindow(h)
+        for _ in range(15):
+            if _user32.GetForegroundWindow() == h:
+                return True
+            time.sleep(0.02)
+        k32 = ctypes.windll.kernel32
+        me = k32.GetCurrentThreadId()
+        others = {_user32.GetWindowThreadProcessId(_user32.GetForegroundWindow(), None),
+                  _user32.GetWindowThreadProcessId(h, None)}
+        attached = [o for o in others if o and o != me and _user32.AttachThreadInput(me, o, True)]
+        try:
+            _user32.BringWindowToTop(h)
+            _user32.SetForegroundWindow(h)
+        finally:
+            for o in attached:
+                _user32.AttachThreadInput(me, o, False)
+        for _ in range(25):
+            if _user32.GetForegroundWindow() == h:
+                return True
+            time.sleep(0.02)
+    except Exception:
+        pass
+    return False
+
+
 # Every click and every detector here is lined up for Roblox FULLSCREEN on a
 # 1920x1080 screen. In a window the title bar and taskbar shift everything, so
 # the macro puts it back in fullscreen itself.
@@ -7371,6 +7434,8 @@ class GlassMacro(ctk.CTk):
             if focused():
                 break
             time.sleep(0.5)
+        if self.running and not focused() and bring_roblox_front():
+            self._ui(lambda: self.log("brought Roblox to the front"))
 
         wlog = lambda m: self._ui(lambda mm=m: self.log(mm))
         if self.running and focused():
@@ -7392,6 +7457,13 @@ class GlassMacro(ctk.CTk):
                     warned = False
                     last_known = time.time()
                     continue
+                if (user_idle_seconds() >= KEEP_FRONT_IDLE
+                        and time.time() - getattr(self, "_front_tried", 0.0) >= KEEP_FRONT_EVERY):
+                    self._front_tried = time.time()
+                    if bring_roblox_front():
+                        self._ui(lambda: self.log(
+                            "brought Roblox back to the front (you were away)"))
+                        continue
                 if not warned:
                     self._ui(lambda: self.log(
                         "PAUSED - Roblox is not the focused window"))
