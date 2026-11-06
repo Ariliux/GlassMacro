@@ -1346,6 +1346,37 @@ def finish_update(dst_dir, old_pid, old_version):
         note(f"could not reopen GlassMacro: {exc}")
 
 
+# ---- hotkeys. F1-F24 only: letters, numbers and Space are pressed in Rivals
+# all the time (and typed in chat), and two F keys are Roblox's own.
+DEFAULT_KEYS = {"start": "F1", "stop": "F2", "setup": "F8"}
+KEY_TITLES = {"start": "Start", "stop": "Stop", "setup": "Save a spot"}
+BLOCKED_KEYS = {"F9": "F9 opens Roblox's developer console",
+                "F11": "F11 is Roblox's fullscreen key - the macro presses it"}
+
+
+def clean_key(name):
+    """'f5' or 'F5' -> 'F5'. None for anything that isn't F1-F24."""
+    m = re.fullmatch(r"[fF](\d{1,2})", str(name or "").strip())
+    if not m or not 1 <= int(m.group(1)) <= 24:
+        return None
+    return f"F{int(m.group(1))}"
+
+
+def load_keys(saved):
+    """The three hotkeys from settings.json. Anything missing, not allowed or
+    clashing falls back to F1 / F2 / F8, so a hand-edited file can't leave the
+    macro without a working Stop key."""
+    keys = dict(DEFAULT_KEYS)
+    if isinstance(saved, dict):
+        for k in keys:
+            v = clean_key(saved.get(k))
+            if v and v not in BLOCKED_KEYS:
+                keys[k] = v
+    if len(set(keys.values())) < len(keys):
+        keys = dict(DEFAULT_KEYS)
+    return keys
+
+
 def load_settings():
     try:
         with open(SETTINGS_PATH, encoding="utf-8") as fh:
@@ -2097,9 +2128,10 @@ class WarningPopup:
 
 
 class GlassButton(ctk.CTkFrame):
-    """The big Start / Stop button: a glyph, a word and an F8 keycap.
+    """The big Start / Stop button: a glyph, a word and a keycap - the key
+    that does the same thing (F1 to start, F2 to stop unless changed).
 
-    A CTkButton holds one string, and 'Start    F8' spaced out by hand read
+    A CTkButton holds one string, and 'Start    F1' spaced out by hand read
     like a placeholder. This is a frame that behaves like a button. Its
     configure() takes the options the app sets and passes anything else (the
     bg_color a parent frame pushes down) straight through.
@@ -2125,7 +2157,7 @@ class GlassButton(ctk.CTkFrame):
         self._key = ctk.CTkFrame(self._row, corner_radius=6, border_width=1,
                                  fg_color=PANEL, border_color=KEYCAP_LINE)
         self._key.pack(side="left", padx=(12, 0))
-        self._keytext = ctk.CTkLabel(self._key, text="F8", font=key_font,
+        self._keytext = ctk.CTkLabel(self._key, text="F1", font=key_font,
                                      text_color=SUBTLE, height=16)
         self._keytext.pack(padx=7, pady=2)
         for w in (self, self._row, self._glyph, self._text, self._key,
@@ -2171,13 +2203,15 @@ class GlassButton(ctk.CTkFrame):
         mine = {}
         for k in ("text", "glyph", "fg_color", "hover_color", "text_color",
                   "glyph_color", "border_color", "key_fg", "key_border",
-                  "key_text"):
+                  "key_text", "key"):
             if k in kw:
                 mine[k] = kw.pop(k)
         if kw:
             super().configure(**kw)
         if "text" in mine:
             self._text.configure(text=mine["text"])
+        if "key" in mine:
+            self._keytext.configure(text=mine["key"])
         if "glyph" in mine:
             self._glyph.configure(text=mine["glyph"])
         if "text_color" in mine:
@@ -2211,6 +2245,10 @@ class GlassMacro(ctk.CTk):
         # a plain file read - before the window is sized, so a saved window
         # size (later) can be used
         self.settings = load_settings()
+        self.keys = load_keys(self.settings.get("keys"))
+        self._keyed_widgets = []        # (label, text with {start} etc.)
+        self._key_picking = None        # which hotkey Settings is waiting for
+        self._key_handles = ()
         self._settings_defaults()
         self._fit_to_screen()
         self.configure(fg_color=BG)
@@ -2233,8 +2271,9 @@ class GlassMacro(ctk.CTk):
         self._build()
         self._drain()
         threading.Thread(target=self._update_worker, daemon=True).start()
-        keyboard.add_hotkey("f8", self._hotkey)
         self.log(f"--- {APP_NAME} v{APP_VER} opened ---")
+        self._arm_keys()
+        self.bind("<KeyPress>", self._key_pressed, add="+")
         self._after_update()
         self._warn_display()
         self.protocol("WM_DELETE_WINDOW", self._close)
@@ -2878,7 +2917,7 @@ class GlassMacro(ctk.CTk):
             if getattr(self, "_updating", False):
                 text, colour = "Updating", ACCENT
             elif self.calibrating:
-                text, colour = "Setting up · F8", ACCENT
+                text, colour = f"Setting up · {self.keys['setup']}", ACCENT
             elif self.watching:
                 text, colour = "Live test", ACCENT
             elif self._run_mode == "RUNNING" and self._state_title == "Paused":
@@ -2962,9 +3001,9 @@ class GlassMacro(ctk.CTk):
             sw.select() if on else sw.deselect()
 
     def _run_clicked(self):
-        """The header button. F8 calls toggle_run directly."""
+        """The header button. The Start and Stop keys skip this."""
         if self.calibrating and not self.running:
-            return              # F8 is ignored during setup too (_hotkey)
+            return              # the Start key is ignored during setup too
         self.toggle_run()
         if not self._ready():
             self._show_page("weapons")
@@ -3288,7 +3327,8 @@ class GlassMacro(ctk.CTk):
             except Exception:
                 pass
 
-    # ---- keyboard: all inside the window. F8 stays the only global key ----
+    # ---- keyboard: all inside the window. Start and Stop (F1/F2 unless
+    # ---- changed in Settings) are the only global keys ----
     def _bind_keys(self):
         order = list(self.PAGE_INFO)
         for i, key in enumerate(order[:9], start=1):
@@ -3961,9 +4001,9 @@ class GlassMacro(ctk.CTk):
                                         height=18, anchor="w",
                                         font=self.F(13, semi=True))
         self.lbl_preview.pack(fill="x", pady=(10, 0))
-        ctk.CTkLabel(pv, text="Hover it, press F8. Don't click.",
-                     text_color=SUBTLE, height=16, anchor="w",
-                     font=self.F(11)).pack(fill="x")
+        self._keyed(ctk.CTkLabel(pv, text="", text_color=SUBTLE, height=16,
+                                 anchor="w", font=self.F(11)),
+                    "Hover it, press {setup}. Don't click.").pack(fill="x")
         self._preview.pack(side="right", fill="y", padx=(16, 0))
         body = ctk.CTkFrame(wrap, fg_color="transparent")
         body.pack(side="left", fill="both", expand=True)
@@ -3976,11 +4016,11 @@ class GlassMacro(ctk.CTk):
         ctk.CTkLabel(top, text="one time · about 30 seconds",
                      text_color=MUTED, font=self.F(11), height=24
                      ).pack(side="right")
-        self.lbl_intro = ctk.CTkLabel(
-            body, text=("Open the weapon picker in Rivals, hover each thing "
-                        "below and press F8. Don't click."),
-            text_color=SUBTLE, font=self.F(12), anchor="w", justify="left",
-            wraplength=470, height=18)
+        self.lbl_intro = self._keyed(ctk.CTkLabel(
+            body, text="", text_color=SUBTLE, font=self.F(12), anchor="w",
+            justify="left", wraplength=470, height=18),
+            "Open the weapon picker in Rivals, hover each thing below and "
+            "press {setup}. Don't click.")
         self.lbl_intro.pack(fill="x", pady=(4, 0))
         self._guide_body = body
 
@@ -4366,6 +4406,35 @@ class GlassMacro(ctk.CTk):
             on=self.settings.get("remember", True),
             command=lambda: self._switch_saved("remember", "sw_remember"))
 
+        self._group(sp, "HOTKEYS")
+        card = self._card(sp, corner_radius=14)
+        card.pack(fill="x")
+        self._key_btns = {}
+        for i, (k, note) in enumerate((
+                ("start", "Starts a run · works while Rivals is in front"),
+                ("stop", "Stops it · works while Rivals is in front"),
+                ("setup", "Saves the spot under the mouse during setup"))):
+            if i:
+                ctk.CTkFrame(card, height=1, fg_color=HAIRLINE,
+                             corner_radius=0).pack(fill="x", padx=1)
+            row = ctk.CTkFrame(card, fg_color="transparent")
+            row.pack(fill="x", padx=14, pady=10)
+            b = self._ghost(row, self.keys[k], lambda k=k: self._pick_key(k))
+            b.configure(width=110, font=self.F(12, semi=True,
+                                               family="Consolas"))
+            b.pack(side="right")
+            self._key_btns[k] = b
+            txt = ctk.CTkFrame(row, fg_color="transparent")
+            txt.pack(side="left", fill="x", expand=True)
+            ctk.CTkLabel(txt, text=KEY_TITLES[k], text_color=TEXT,
+                         font=self.F(13), anchor="w", height=18).pack(fill="x")
+            ctk.CTkLabel(txt, text=note, text_color=SUBTLE, font=self.F(11),
+                         anchor="w", height=16).pack(fill="x")
+        self.lbl_keys = ctk.CTkLabel(card, text=self.KEYS_HINT,
+                                     text_color=MUTED, font=self.F(11),
+                                     anchor="w", height=16)
+        self.lbl_keys.pack(fill="x", padx=14, pady=(0, 10))
+
         self._group(sp, "MORE")
         card = self._card(sp, corner_radius=14)
         card.pack(fill="x")
@@ -4378,6 +4447,119 @@ class GlassMacro(ctk.CTk):
                            lambda k=key: self._show_page(k), first=i == 0)
 
         self._build_files(sp)
+
+    # ---- hotkeys --------------------------------------------------------
+    KEYS_HINT = "Click a key above, then press the new one · F1-F24"
+
+    def _kt(self, text):
+        """`text` with {start}, {stop} and {setup} filled in."""
+        return (str(text).replace("{start}", self.keys["start"])
+                .replace("{stop}", self.keys["stop"])
+                .replace("{setup}", self.keys["setup"]))
+
+    def _keyed(self, label, template):
+        """Show `template` on `label` with the hotkeys filled in, and again
+        whenever they change. Returns the label."""
+        self._keyed_widgets.append((label, template))
+        label.configure(text=self._kt(template))
+        return label
+
+    def _arm_keys(self):
+        """(Re)register the Start and Stop keys - the only keys that work
+        outside this window. The setup key is read by the setup workers."""
+        for h in self._key_handles:
+            try:
+                keyboard.remove_hotkey(h)
+            except Exception:
+                pass
+        try:
+            self._key_handles = (
+                keyboard.add_hotkey(self.keys["start"].lower(),
+                                    self._hotkey_start),
+                keyboard.add_hotkey(self.keys["stop"].lower(),
+                                    self._hotkey_stop))
+        except Exception as exc:
+            self._key_handles = ()
+            self.log(f"couldn't set up the hotkeys ({exc}) - use the Start "
+                     "button")
+
+    def _hotkey_start(self):
+        # Decided on the main thread when it runs, not here: a held key
+        # repeats, and two queued starts must not become a start and a stop.
+        self._ui(lambda: None if (self.running or self.calibrating
+                                  or self._key_picking) else self.toggle_run())
+
+    def _hotkey_stop(self):
+        self._ui(lambda: self.toggle_run() if self.running else None)
+
+    def _pick_key(self, which):
+        """Wait for the next key pressed in this window and make it the
+        `which` hotkey."""
+        if self.running or self.calibrating or self.watching:
+            self._key_note("Stop the macro first", AMBER)
+            return
+        self._cancel_key_pick()
+        self._key_picking = which
+        self._key_btns[which].configure(text="Press a key…",
+                                        border_color=ACCENT)
+        self._key_note("Press the new key · Esc cancels", ACCENT)
+        self.focus_set()
+
+    def _cancel_key_pick(self):
+        which, self._key_picking = self._key_picking, None
+        if which:
+            self._key_btns[which].configure(text=self.keys[which],
+                                            border_color=LINE)
+
+    def _key_note(self, text, colour):
+        lbl = getattr(self, "lbl_keys", None)
+        if lbl is not None:
+            lbl.configure(text=text, text_color=colour)
+
+    def _key_pressed(self, e):
+        which = self._key_picking
+        if not which:
+            return None
+        if e.keysym == "Escape":
+            self._cancel_key_pick()
+            self._key_note(self.KEYS_HINT, MUTED)
+            return "break"
+        key = clean_key(e.keysym)
+        if not key:
+            self._key_note(f"{e.keysym} can't be a hotkey - pick one of "
+                           "F1-F24", AMBER)
+            return "break"
+        if key in BLOCKED_KEYS:
+            self._key_note(BLOCKED_KEYS[key] + " - pick another", AMBER)
+            return "break"
+        taken = [n for n, v in self.keys.items() if v == key and n != which]
+        if taken:
+            self._key_note(f"{key} is already {KEY_TITLES[taken[0]]} - "
+                           "pick another", AMBER)
+            return "break"
+        self.keys[which] = key
+        self.settings["keys"] = dict(self.keys)
+        save_settings(self.settings)
+        self._cancel_key_pick()
+        self._arm_keys()
+        self._refresh_keys()
+        self._key_note(f"{KEY_TITLES[which]} is now {key}", GREEN)
+        self.log(f"hotkey: {KEY_TITLES[which]} is now {key}")
+        return "break"
+
+    def _refresh_keys(self):
+        """Put the new keys everywhere they are shown."""
+        for lbl, template in self._keyed_widgets:
+            try:
+                lbl.configure(text=self._kt(template))
+            except Exception:
+                pass
+        for k, b in getattr(self, "_key_btns", {}).items():
+            b.configure(text=self.keys[k])
+        self._paint_run()
+        if not (self.running or self.calibrating) and self._ready():
+            self.set_state("Ready", self._kt("Open Rivals and press {start}, "
+                                             "or hit Start."), MUTED)
 
     def _switch_saved(self, key, name):
         self.settings[key] = bool(getattr(self, name).get())
@@ -4513,8 +4695,9 @@ class GlassMacro(ctk.CTk):
                     pady=(3, 0))
             ctk.CTkLabel(tx, text=title, text_color=TEXT, height=18,
                          font=self.F(13, semi=True), anchor="w").pack(fill="x")
-            ctk.CTkLabel(tx, text=note, text_color=SUBTLE, height=16,
-                         font=self.F(11), anchor="w").pack(fill="x")
+            self._keyed(ctk.CTkLabel(tx, text="", text_color=SUBTLE,
+                                     height=16, font=self.F(11), anchor="w"),
+                        note).pack(fill="x")
             self._way_rows.append({"row": row, "badge": badge})
         self.lbl_way = ctk.CTkLabel(body, text="Press Re-teach in the "
                                     "Rivals lobby. Esc cancels.",
@@ -4531,9 +4714,10 @@ class GlassMacro(ctk.CTk):
         self._paint_way()
 
     WAY_STEPS = (
-        ("Play, in the lobby", "Hover it, press F8, then click it yourself."),
-        ("Free For All", "Scroll down to it, hover it, press F8, click it."),
-        ("Play, on the Free For All screen", "Hover it and press F8."),
+        ("Play, in the lobby",
+         "Hover it, press {setup}, then click it yourself."),
+        ("Free For All", "Scroll down to it, hover it, press {setup}, click it."),
+        ("Play, on the Free For All screen", "Hover it and press {setup}."),
     )
 
     # the card's titles for the teach flow's lines -> step (4 = saved, 0 =
@@ -4579,7 +4763,8 @@ class GlassMacro(ctk.CTk):
                                  ACCENT if cur else CARD_HI,
                                  INK if cur else SUBTLE, bg)
         self.lbl_way.configure(
-            text=("Hover it and press F8 · Esc cancels" if w["step"] else
+            text=(f"Hover it and press {self.keys['setup']} · Esc cancels"
+                  if w["step"] else
                   "Saved · it'll use this from the next reconnect"
                   if w["done"] == {1, 2, 3} else
                   "Press Re-teach in the Rivals lobby. Esc cancels."),
@@ -4597,10 +4782,10 @@ class GlassMacro(ctk.CTk):
                        "Every line it has written, for bug reports",
                        self._open_log)
 
-        ctk.CTkLabel(sp, text=(f"GlassMacro {APP_VER} · made for "
-                               f"1920×1080 · F8 starts and stops"),
-                     text_color=MUTED, font=self.F(11), height=16
-                     ).pack(pady=(18, 8))
+        self._keyed(ctk.CTkLabel(sp, text="", text_color=MUTED,
+                                 font=self.F(11), height=16),
+                    f"GlassMacro {APP_VER} · made for 1920×1080 · "
+                    "{start} starts, {stop} stops").pack(pady=(18, 8))
 
     # ---- Stats: lifetime totals from stats.json ----
     def _build_stats(self, page):
@@ -5352,8 +5537,9 @@ class GlassMacro(ctk.CTk):
                        state="normal", text="Send test"))
 
     # ---- About ----
-    SHORTCUTS = (("F8", "Start or stop · works while Rivals is in front"),
-                 ("F8", "During setup: save the spot under the mouse"),
+    SHORTCUTS = (("{start}", "Start · works while Rivals is in front"),
+                 ("{stop}", "Stop · works while Rivals is in front"),
+                 ("{setup}", "During setup: save the spot under the mouse"),
                  ("Esc", "Cancel a setup or a teach"),
                  ("Ctrl 1–9", "Go to a page, in sidebar order"),
                  ("Ctrl Tab", "Next page · with Shift, the one before"),
@@ -5438,9 +5624,10 @@ class GlassMacro(ctk.CTk):
                                width=72, height=24)
             cap.pack(side="left")
             cap.pack_propagate(False)
-            ctk.CTkLabel(cap, text=key, text_color=SUBTLE, height=18,
-                         font=self.F(10, semi=True, family="Consolas")
-                         ).pack(expand=True)
+            self._keyed(ctk.CTkLabel(cap, text="", text_color=SUBTLE,
+                                     height=18, font=self.F(10, semi=True,
+                                                            family="Consolas")),
+                        key).pack(expand=True)
             ctk.CTkLabel(row, text=what, text_color=TEXT, font=self.F(12),
                          anchor="w", height=18).pack(side="left",
                                                      padx=(12, 0))
@@ -6109,7 +6296,7 @@ class GlassMacro(ctk.CTk):
                 self._show_playtime(now - self.session_start, live=True)
                 self._live_tick(now)
             elif self._was_running:
-                # stopped - by F8, by Stop, or the worker ending on an error
+                # stopped - by Stop (key or button), or the worker erroring
                 self._was_running = False
                 keep_awake(False)
                 self._apply_topmost()
@@ -6193,7 +6380,7 @@ class GlassMacro(ctk.CTk):
          "GREEN", None),
         ("could not get into a match", "Couldn't get in",
          "Tried three times · it'll keep trying.", "RED", None),
-        ("started - F8 stops it", "Starting", "Checking where you are.",
+        (" stops it", "Starting", "Checking where you are.",
          "ACCENT", None),
         ("pressing F11 for fullscreen", "Going fullscreen",
          "Roblox was in a window · pressed F11.", "ACCENT", None),
@@ -6216,18 +6403,18 @@ class GlassMacro(ctk.CTk):
          "Random, then the Grenade Launcher, then the loadout slot.",
          "RED", None),
         ("calibration saved", "Weapons set up",
-         "Open Rivals and press F8, or hit Start.", "GREEN", None),
+         "Open Rivals and press {start}, or hit Start.", "GREEN", None),
         ("from the LOBBY", "Teaching the way back · 1 of 3",
-         "In the hub: hover Play, press F8, then click it yourself.",
+         "In the hub: hover Play, press {setup}, then click it yourself.",
          "ACCENT", None),
         ("now hover FREE FOR ALL", "Teaching the way back · 2 of 3",
-         "Scroll to Free For All, hover it, press F8, then click it.",
+         "Scroll to Free For All, hover it, press {setup}, then click it.",
          "ACCENT", None),
         ("now hover PLAY on", "Teaching the way back · 3 of 3",
-         "Hover Play on the Free For All screen and press F8.",
+         "Hover Play on the Free For All screen and press {setup}.",
          "ACCENT", None),
         ("saved the way back", "Way back saved",
-         "Open Rivals and press F8, or hit Start.", "GREEN", None),
+         "Open Rivals and press {start}, or hit Start.", "GREEN", None),
         ("timed out - nothing saved", "Nothing saved",
          "Took too long between presses.", "MUTED", None),
         ("stop the macro first", "Stop it first",
@@ -6301,7 +6488,7 @@ class GlassMacro(ctk.CTk):
          "Setup needed", "redo it with the loadout slot"),
         ("calibration looks like the same", "needsetup", "!", "AMBER",
          "Setup needed", "one tile was hovered twice"),
-        ("started - F8 stops it", "start", "▶", "SUBTLE", "Started", ""),
+        (" stops it", "start", "▶", "SUBTLE", "Started", ""),
     )
 
     # Lifetime stats and Discord alerts: (needle, key), first match wins.
@@ -6346,7 +6533,7 @@ class GlassMacro(ctk.CTk):
 
     def _status_from_log(self, msg):
         text = str(msg)
-        if text.startswith("started - F8 stops it"):
+        if text.startswith("started - ") and text.endswith(" stops it"):
             # toggle_run sets session_start just before logging this. Taking
             # it here, not on the next 1s tick, keeps a run stopped within a
             # second from being reported with the PREVIOUS run's length.
@@ -6364,7 +6551,7 @@ class GlassMacro(ctk.CTk):
             return
         for needle, title, detail, colour, counter in self.STATUS_RULES:
             if needle in text:
-                self.set_state(title, self._fill_n(detail, text),
+                self.set_state(title, self._kt(self._fill_n(detail, text)),
                                globals()[colour])
                 if counter == "picks":
                     self.n_picks += 1
@@ -6583,7 +6770,7 @@ class GlassMacro(ctk.CTk):
             self._updated_note = None
 
     def _run_ended(self, now, kind="stop", ran=None, seq=None):
-        """A real run ended (Stop, F8, an error, or closing the app): final
+        """A real run ended (Stop, the Stop key, an error, or closing the app): final
         stats, the longest run, and the stop alert."""
         if not self._live_run or (seq is not None and seq != self._run_seq):
             return
@@ -6778,7 +6965,7 @@ class GlassMacro(ctk.CTk):
             self._preview.pack_forget()
         if self._setup_active:
             self.btn_cal.configure(state="disabled",
-                                   text="Hover it and press F8",
+                                   text=f"Hover it and press {self.keys['setup']}",
                                    fg_color=CARD_HI)
         else:
             self.btn_cal.configure(state="normal",
@@ -6924,23 +7111,25 @@ class GlassMacro(ctk.CTk):
         if self.running:
             # neutral, not a red slab - a 3-hour run should not look like an
             # error the whole time
-            b.configure(text="Stop", glyph="■", fg_color=CARD_HI,
+            b.configure(text="Stop", glyph="■", key=self.keys["stop"],
+                        fg_color=CARD_HI,
                         hover_color=RED_DIM, text_color=TEXT, glyph_color=RED,
                         border_color=LINE, key_fg=PANEL,
                         key_border=KEYCAP_LINE, key_text=SUBTLE)
         elif self.calibrating:
             # Start is ignored during setup (_run_clicked, _hotkey)
-            b.configure(text="Setting up", glyph="…",
+            b.configure(text="Setting up", glyph="…", key=self.keys["setup"],
                         fg_color=CARD_HI, hover_color=CARD_HI, text_color=MUTED,
                         glyph_color=ACCENT, border_color=LINE, key_fg=PANEL,
                         key_border=KEYCAP_LINE, key_text=MUTED)
         elif self._ready():
-            b.configure(text="Start", glyph="▶", fg_color=ACCENT,
+            b.configure(text="Start", glyph="▶", key=self.keys["start"],
+                        fg_color=ACCENT,
                         hover_color=ACCENT_SOFT, text_color=INK,
                         glyph_color=INK, border_color=ACCENT,
                         key_fg="#4ab8ec", key_border="#2b93d1", key_text=INK)
         else:
-            b.configure(text="Set up first", glyph="!",
+            b.configure(text="Set up first", glyph="!", key=self.keys["start"],
                         fg_color=CARD_HI, hover_color=LINE, text_color=MUTED,
                         glyph_color=AMBER, border_color=LINE, key_fg=PANEL,
                         key_border=KEYCAP_LINE, key_text=MUTED)
@@ -6969,20 +7158,13 @@ class GlassMacro(ctk.CTk):
         self._paint_guide()
         self._refresh_layout()
         if not self.running and self._ready() and not self._setup_active:
-            self.set_state("Ready", "Open Rivals and press F8, or hit Start.",
-                           MUTED)
+            self.set_state("Ready", self._kt("Open Rivals and press {start}, "
+                                             "or hit Start."), MUTED)
         self._apply_topmost()        # the pin comes back once setup ends
         self._paint_pill()
         self._paint_badges()
 
     # ----------------------------------------------------------- actions --
-    def _hotkey(self):
-        # F8 means "capture a point" while calibrating and "start/stop"
-        # otherwise; they never overlap.
-        if self.calibrating:
-            return
-        self._ui(self.toggle_run)
-
     def calibrate(self):
         if self.calibrating:
             return
@@ -6993,8 +7175,9 @@ class GlassMacro(ctk.CTk):
         self._drop_pin()             # setup grabs the screen under us
         self._paint_run()
         self._show_page("weapons")
-        self.btn_cal.configure(text="Waiting for F8...", state="disabled")
-        self.log("hover RANDOM and press F8")
+        self.btn_cal.configure(text=f"Waiting for {self.keys['setup']}...",
+                               state="disabled")
+        self.log(f"hover RANDOM and press {self.keys['setup']}")
         threading.Thread(target=self._calibrate_worker, daemon=True).start()
 
     def _calibrate_worker(self):
@@ -7009,14 +7192,15 @@ class GlassMacro(ctk.CTk):
                 if ev.name == "esc":
                     self._ui(lambda: self.log("calibration cancelled"))
                     return
-                if ev.name != "f8":
+                if ev.name != self.keys["setup"].lower():
                     continue
                 spots.append(cursor_pos())
                 n = len(spots)
                 self._ui(lambda n=n, p=spots[-1]: self.log(
                     f"  got {WANT[n - 1]} at {p}"))
                 if n < len(WANT):
-                    self._ui(lambda n=n: self.log(f"hover {WANT[n]} and press F8"))
+                    self._ui(lambda n=n: self.log(
+                        f"hover {WANT[n]} and press {self.keys['setup']}"))
                 time.sleep(0.3)
 
             if len(spots) < 3:
@@ -7079,9 +7263,10 @@ class GlassMacro(ctk.CTk):
         self._drop_pin()
         self._paint_run()
         self._show_page("wayback")
-        self.btn_ffa.configure(text="Waiting for F8...", state="disabled")
-        self.log("from the LOBBY: hover PLAY and press F8 (then click it "
-                 "yourself and carry on)")
+        self.btn_ffa.configure(text=f"Waiting for {self.keys['setup']}...",
+                               state="disabled")
+        self.log(f"from the LOBBY: hover PLAY and press {self.keys['setup']} "
+                 "(then click it yourself and carry on)")
         threading.Thread(target=self._teach_ffa_worker, daemon=True).start()
 
     def _teach_ffa_worker(self):
@@ -7098,14 +7283,15 @@ class GlassMacro(ctk.CTk):
                 if ev.name == "esc":
                     self._ui(lambda: self.log("cancelled"))
                     return
-                if ev.name != "f8":
+                if ev.name != self.keys["setup"].lower():
                     continue
                 spots.append(cursor_pos())
                 k = len(spots)
                 self._ui(lambda k=k, p=spots[-1]: self.log(
                     f"  got {WANT[k - 1]} at {p}"))
                 if k < len(WANT):
-                    self._ui(lambda k=k: self.log(f"now hover {WANT[k]}, F8"))
+                    self._ui(lambda k=k: self.log(
+                        f"now hover {WANT[k]}, {self.keys['setup']}"))
                 time.sleep(0.3)
 
             if len(spots) < 3:
@@ -7484,7 +7670,7 @@ class GlassMacro(ctk.CTk):
         self.val_joins.configure(text="0")
         self.val_recov.configure(text="0")
         self._status("RUNNING", GREEN)
-        self.log("started - F8 stops it")
+        self.log(f"started - {self.keys['stop']} stops it")
         self._worker = threading.Thread(target=self._run_worker, daemon=True)
         self._worker.start()
         try:

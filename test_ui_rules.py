@@ -97,7 +97,7 @@ check(hasattr(app, "_key_page") and app._page_pref is None,
       f"Ctrl+1-9 handler exists and building the app picks no page "
       f"(_page_pref={getattr(app, '_page_pref', '?')!r})")
 SEQ = [
-    ("started - F8 stops it", "Starting", "Started"),
+    ("started - F2 stops it", "Starting", "Started"),
     ("in the hub - joining FFA", "Joining Free For All",
      "Joining Free For All"),
     ("  in a match", "In a match", "Back in Free For All"),
@@ -225,12 +225,12 @@ G.display_scaling, G.screen_size = real_scaling, real_size
 # a run stopped within a second must report ITS length, not the last run's
 import time                                                  # noqa: E402
 app.running, app.session_start = True, time.time() - 7200    # run A: 2h
-app.log("started - F8 stops it")
+app.log("started - F2 stops it")
 app.running, app.session_start = False, None
 app.log("stopped")
 check("Ran 2h" in app.lbl_detail.cget("text"), "a 2h run reports 2h")
 app.running, app.session_start = True, time.time()           # run B: instant
-app.log("started - F8 stops it")
+app.log("started - F2 stops it")
 app.running, app.session_start = False, None
 app.log("stopped")
 check("Ran 0s" in app.lbl_detail.cget("text"),

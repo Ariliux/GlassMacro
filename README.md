@@ -59,7 +59,8 @@ The macro just needs to learn where your weapons are. Everything else is already
 1. In Rivals, open the **weapon picker**.
 2. In GlassMacro, press **I'm on the weapon picker · start setup**. The app walks you
    through it one step at a time, with a little picture of what to hover.
-3. Hover over each of these and press **F8**. Don't click, just hover.
+3. Hover over each of these and press **F8**. Don't click, just hover. (F8 is the setup
+   key, which you can change in **Settings** → **Hotkeys**.)
    1. the **Random** tile
    2. the **Grenade Launcher** button itself
    3. your **first loadout slot** along the top
@@ -69,8 +70,8 @@ weapons and the grid moves, hit **Redo setup** and do the same three hovers.
 
 ## Using it
 
-- Press **Start** at the top of the window, or **F8** while you're in Rivals. **F8** again
-  stops it.
+- Press **Start** at the top of the window, or **F1** while you're in Rivals. **F2** stops it.
+- Want different keys? Change them in **Settings** → **Hotkeys** (F1 to F24, except F9 and F11, which Roblox uses).
 - You can start it from anywhere: the hub, mid-match or spectating. It figures out where
   you are.
 - The pages are down the left side. Make the window narrow and the sidebar folds into a
@@ -160,8 +161,8 @@ nothing you download ever should.
 - **What it actually does on your PC:**
   - It looks at your screen to see what's showing, and only uses your keyboard and mouse
     inside Rivals.
-  - It listens for F8 to start and stop, plus Esc during setup. It doesn't record anything
-    else you type.
+  - It listens for your Start and Stop keys (F1 and F2 unless you change them), plus the
+    setup key and Esc during setup. It doesn't record anything else you type.
   - The only program it ever closes or reopens is Roblox.
   - It only ever contacts two places:
     - **GitHub**, to check whether there's a newer version and, if you click Yes, to

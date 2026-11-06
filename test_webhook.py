@@ -333,7 +333,7 @@ for k in wh["mention"]:
 app.running = True
 app._status("RUNNING", G.GREEN)
 app.session_start = time.time() - 7300
-app.log("started - F8 stops it")
+app.log("started - F2 stops it")
 for needle, _key in G.GlassMacro.EVENT_RULES:
     app.log(needle + " 12 (fake)")
 app._paused_since = time.time() - 700
