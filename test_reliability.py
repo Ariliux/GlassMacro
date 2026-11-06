@@ -125,6 +125,50 @@ count = len(launched)
 tick(1)
 check(not tick(50) and not tick(100) and len(launched) == count,
       "with Reconnect automatically off, it never reopens Roblox")
+
+# ---- 1.1.2: Roblox froze - the game picture stopped moving -----------------
+app.sw_reconnect.select()
+G.save_event_shot = lambda *a, **k: None
+pic = {"img": G.np.zeros((36, 64), G.np.int16)}
+G.frame_thumb = lambda: pic["img"].copy()
+app._reopens, app._reopen_gave_up = [], False
+app._frame, app._frame_since, app._frame_at = None, 0.0, 0.0
+logs.clear()
+count = len(launched)
+
+
+def fz(seconds, change=0):
+    pic["img"] = pic["img"] + change
+    state["now"] += seconds
+    return app._frozen_check(logs.append)
+
+
+check(not any(fz(5, 9) for _ in range(120)) and len(launched) == count,
+      "a moving picture (10 min of it) is never 'frozen'")
+check(not any(fz(5) for _ in range(40)) and len(launched) == count,
+      "the picture still for under 4 minutes: waits")
+check(any(fz(5) for _ in range(10)) and len(launched) == count + 1
+      and any("Roblox froze" in m for m in logs),
+      "the picture still for 4 minutes: restarts Roblox and says why")
+check(not any(fz(5, 1 if i % 2 else -1) for i in range(40))
+      and any(fz(5) for _ in range(20)) and len(launched) == count + 2,
+      "a flicker of 1 shade still counts as the same picture")
+check(any(fz(5) for _ in range(60)) and len(launched) == count + 3,
+      "restarts again if it freezes again")
+check(not any(fz(5) for _ in range(60)) and len(launched) == count + 3
+      and any("keeps freezing" in m for m in logs),
+      "a 4th time within the hour: stops restarting and says so")
+app._reopens, app._reopen_gave_up = [state["now"]] * 2, False
+app._roblox_gone_since, state["window"], state["process"] = 0.0, False, False
+tick(1)
+tick(50)
+check(len(launched) == count + 4 and not tick(1) and not tick(50)
+      and any("keeps closing" in m for m in logs),
+      "closing and freezing share the 3 restarts an hour - no loop between them")
+app.sw_reconnect.deselect()
+app._reopens, app._frame = [], None
+check(not any(fz(5) for _ in range(120)) and len(launched) == count + 4,
+      "with Reconnect automatically off, a frozen picture is left alone")
 app.running = False
 app.destroy()
 

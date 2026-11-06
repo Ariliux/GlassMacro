@@ -35,7 +35,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import keyboard
 
-APP_NAME, APP_VER = "GlassMacro", "1.1.1"
+APP_NAME, APP_VER = "GlassMacro", "1.1.2"
 
 # Calibration lives in AppData, never beside the exe: a PyInstaller onefile
 # build unpacks to a temp folder that is deleted on exit, so anything saved
@@ -660,6 +660,22 @@ ROBLOX_GONE_AFTER = 45.0
 ROBLOX_REOPENS_PER_HOUR = 3       # never a crash-and-relaunch loop
 # Running with no window this long = stuck (crash box, never-exited client).
 ROBLOX_STUCK_AFTER = 90.0
+# The game picture not changing AT ALL for this long, while the macro keeps
+# jumping and firing, means Roblox froze: it lost the server, and only shows
+# the 277 disconnect many minutes later, if ever. Rivals never holds that
+# still - even alone in an empty server, the jumping moves the view.
+FROZEN_AFTER = 240.0
+FROZEN_CHECK_EVERY = 5.0
+FRAME_SAME = 2              # thumbnails this close are the same picture
+
+
+def frame_thumb():
+    """A 64x36 greyscale thumbnail of the screen, or None."""
+    try:
+        return cv2.resize(grab_gray(), (64, 36),
+                          interpolation=cv2.INTER_AREA).astype(np.int16)
+    except Exception:
+        return None
 
 
 def keep_awake(on):
@@ -1371,6 +1387,7 @@ HOOK_ACCENT, HOOK_GREEN, HOOK_AMBER, HOOK_RED, HOOK_MUTED = (
 HOOK_COLOURS = {"start": HOOK_ACCENT, "hourly": HOOK_GREEN,
                 "updated": HOOK_GREEN, "reopen": HOOK_AMBER,
                 "restart": HOOK_AMBER, "reconnect": HOOK_AMBER,
+                "frozen": HOOK_AMBER, "froze_gave_up": HOOK_RED,
                 "paused10": HOOK_AMBER, "error": HOOK_RED,
                 "gave_up": HOOK_RED, "no_join": HOOK_RED}
 # when the queue is full the least important go first
@@ -4218,7 +4235,8 @@ class GlassMacro(ctk.CTk):
     FEED_FILTERS = {
         "All": None,
         "Loadouts": ("pick", "miss"),
-        "Problems": ("err", "reopen", "reopenstop", "noin", "disc", "restart",
+        "Problems": ("err", "reopen", "reopenstop", "frozen", "frozenstop",
+                     "noin", "disc", "restart",
                      "nofs", "scaling", "screen", "needsetup", "updfail",
                      "pause"),
         "Setup": ("setup", "way", "needsetup", "screenok", "update",
@@ -6142,6 +6160,10 @@ class GlassMacro(ctk.CTk):
          "Roblox closed, so it's starting Rivals again.", "AMBER", None),
         ("Roblox keeps closing", "Roblox keeps closing",
          "It won't reopen it again this hour.", "RED", None),
+        ("Roblox froze", "Restarting Roblox",
+         "The game froze, so it's starting fresh.", "AMBER", None),
+        ("Roblox keeps freezing", "Roblox keeps freezing",
+         "It won't restart it again this hour.", "RED", None),
         ("just playing", "In a match", "Picked up where you were.",
          "GREEN", None),
         ("choosing loadout", "Picking a loadout",
@@ -6222,6 +6244,10 @@ class GlassMacro(ctk.CTk):
          "Reopened Rivals", "Roblox had closed"),
         ("Roblox keeps closing", "reopenstop", "×", "RED",
          "Roblox keeps closing", "not reopening it again this hour"),
+        ("Roblox froze", "frozen", "!", "AMBER", "Restarted Roblox",
+         "the game had frozen"),
+        ("Roblox keeps freezing", "frozenstop", "×", "RED",
+         "Roblox keeps freezing", "not restarting it again this hour"),
         ("just playing", "resume", "▶", "SUBTLE", "Already in a match",
          "picking up from here"),
         ("in the hub - joining", "hub", "➜", "ACCENT",
@@ -6283,6 +6309,8 @@ class GlassMacro(ctk.CTk):
     EVENT_RULES = (
         ("stopped on an error", "error"),
         ("Roblox keeps closing", "gave_up"),
+        ("Roblox keeps freezing", "froze_gave_up"),
+        ("Roblox froze", "frozen"),
         ("could not get into a match", "no_join"),
         ("Roblox closed - reopening Rivals", "reopen"),
         ("still stuck - restarting Roblox", "restart"),
@@ -6295,6 +6323,7 @@ class GlassMacro(ctk.CTk):
     )
     # event key -> the stats.json counter it bumps
     STAT_OF = {"error": "errors", "gave_up": "reopen_giveups",
+               "froze_gave_up": "reopen_giveups", "frozen": "roblox_restarts",
                "no_join": "join_failures", "reopen": "roblox_reopens",
                "restart": "roblox_restarts", "reconnect": "reconnects",
                "quiet": "quiet_stretches", "skipped": "skipped_picks"}
@@ -6302,6 +6331,7 @@ class GlassMacro(ctk.CTk):
     HOOK_GROUP = {"start": "start_stop", "stop": "start_stop",
                   "closed": "start_stop", "hourly": "hourly",
                   "error": "error", "gave_up": "stuck", "no_join": "stuck",
+                  "froze_gave_up": "stuck", "frozen": "recover",
                   "paused10": "paused", "reopen": "recover",
                   "restart": "recover", "reconnect": "recover",
                   "updated": "updated"}
@@ -6430,6 +6460,11 @@ class GlassMacro(ctk.CTk):
                    "Roblox had closed, so it was started again."),
         "restart": ("Restarted Roblox",
                     "Reconnecting didn't work, so Roblox was started fresh."),
+        "frozen": ("Restarted Roblox",
+                   "The game froze (the picture stopped moving), so Roblox "
+                   "was started fresh."),
+        "froze_gave_up": ("Roblox kept freezing",
+                          "It won't be restarted again this hour."),
         "reconnect": ("Reconnected",
                       "Got disconnected and clicked Reconnect."),
         "updated": ("Updated", ""),
@@ -6451,7 +6486,7 @@ class GlassMacro(ctk.CTk):
         if key == "resumed":
             self._paused_since, self._paused_sent = None, False
             return
-        if key in ("reopen", "restart"):
+        if key in ("reopen", "restart", "frozen"):
             # Roblox came back without a "resuming" line; if it isn't in
             # front the worker logs PAUSED again and the clock restarts
             self._paused_since, self._paused_sent = None, False
@@ -6465,7 +6500,8 @@ class GlassMacro(ctk.CTk):
         if self._live_run and key in self.STAT_OF:
             st = self._stats
             st[self.STAT_OF[key]] = st.get(self.STAT_OF[key], 0) + 1
-        if self._live_run and key in ("reopen", "restart", "reconnect"):
+        if self._live_run and key in ("reopen", "restart", "frozen",
+                                      "reconnect"):
             self.n_recov += 1
             self.val_recov.configure(text=str(self.n_recov))
             self._bump(self.val_recov)
@@ -7138,17 +7174,61 @@ class GlassMacro(ctk.CTk):
                 self._roblox_gone_since = now
                 return False
             log("Roblox is running with no window - restarting it")
+        if not self._reopen_allowed(lambda: log(
+                "Roblox keeps closing - not reopening it again this hour")):
+            return False
+        self._roblox_gone_since = 0.0
+        self._roblox_windowless_since = 0.0
+        log("Roblox closed - reopening Rivals")
+        relaunch_roblox(self.place_id(), lambda m: log("  " + m))
+        for _ in range(int(RELAUNCH_WAIT * 2)):
+            if not self.running:
+                return True
+            time.sleep(0.5)
+        if self.running and focused():
+            self.rejoin_ffa(log)
+        return True
+
+    def _reopen_allowed(self, give_up):
+        """Use up one of the ROBLOX_REOPENS_PER_HOUR restarts. Closed and
+        frozen share them, so the two can never make a loop together. False,
+        calling `give_up` once, when they are used up."""
+        now = time.time()
         recent = [t for t in getattr(self, "_reopens", []) if now - t < 3600]
         if len(recent) >= ROBLOX_REOPENS_PER_HOUR:
             if not getattr(self, "_reopen_gave_up", False):
                 self._reopen_gave_up = True
-                log("Roblox keeps closing - not reopening it again this hour")
+                give_up()
             return False
         self._reopens = recent + [now]
         self._reopen_gave_up = False
-        self._roblox_gone_since = 0.0
-        self._roblox_windowless_since = 0.0
-        log("Roblox closed - reopening Rivals")
+        return True
+
+    def _frozen_check(self, log):
+        """Restart Roblox if its picture hasn't moved for FROZEN_AFTER. True
+        if it restarted it. Only called with Roblox in front, and the worker
+        forgets the picture whenever it isn't, so paused time never counts."""
+        now = time.time()
+        if now - self._frame_at < FROZEN_CHECK_EVERY:
+            return False
+        self._frame_at = now
+        thumb = frame_thumb()
+        if thumb is None:
+            return False
+        if (self._frame is None or thumb.shape != self._frame.shape
+                or int(np.abs(thumb - self._frame).max()) > FRAME_SAME):
+            self._frame, self._frame_since = thumb, now
+            return False
+        if now - self._frame_since < FROZEN_AFTER or not self.sw_reconnect.get():
+            return False
+        if not self._reopen_allowed(lambda: log(
+                "Roblox keeps freezing - not restarting it again this hour")):
+            return False
+        mins = int((now - self._frame_since) / 60)
+        self._frame = None
+        shot = save_event_shot("frozen") if self.sw_shots.get() else None
+        log(f"Roblox froze - the game picture hasn't moved for {mins} min, "
+            f"restarting Roblox" + (f" - saved {shot}" if shot else ""))
         relaunch_roblox(self.place_id(), lambda m: log("  " + m))
         for _ in range(int(RELAUNCH_WAIT * 2)):
             if not self.running:
@@ -7422,6 +7502,7 @@ class GlassMacro(ctk.CTk):
         last_known = time.time()    # last time ANY detector recognised the screen
         last_stall_shot = 0.0
         last_join_shot = 0.0
+        self._frame, self._frame_since, self._frame_at = None, 0.0, 0.0
 
         # Starting from the lobby is the normal case, so it joins by itself.
         # But "the picker is not up" does NOT mean "not in a match" - mid-round
@@ -7451,6 +7532,7 @@ class GlassMacro(ctk.CTk):
                     "just playing"))
         while self.running:
             if not focused():
+                self._frame = None          # paused time never counts as frozen
                 if self._roblox_closed_check(wlog):
                     picked_at = 0.0
                     fails = 0
@@ -7487,6 +7569,12 @@ class GlassMacro(ctk.CTk):
                 continue
             if self._fs.pop("just_switched", False):
                 time.sleep(FULLSCREEN_SETTLE)    # menus re-lay out at the new size
+                continue
+
+            if self._frozen_check(wlog):
+                picked_at = 0.0
+                fails = 0
+                last_known = time.time()
                 continue
 
             if time.time() - beat > HEARTBEAT:
