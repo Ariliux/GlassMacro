@@ -35,7 +35,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import keyboard
 
-APP_NAME, APP_VER = "GlassMacro", "1.1.2"
+APP_NAME, APP_VER = "GlassMacro", "1.1.3"
 
 # Calibration lives in AppData, never beside the exe: a PyInstaller onefile
 # build unpacks to a temp folder that is deleted on exit, so anything saved
@@ -201,8 +201,8 @@ DEFAULT_SCROLL_SECS = 4.0
 
 
 def default_ffa_path():
-    """The shipped menu path, in this screen's pixels."""
-    sw, sh = _user32.GetSystemMetrics(0), _user32.GetSystemMetrics(1)
+    """The shipped menu path, in the 1080-tall picture (see VIRT_H)."""
+    sw, sh = virt_size()
     return [[int(round(fx * sw)), int(round(fy * sh))]
             for fx, fy in DEFAULT_FFA_FRAC]
 
@@ -293,7 +293,15 @@ def move_to(x, y, tries=60):
     acceleration, so the distance asked for is not the distance travelled -
     hence stepping towards the target and re-reading the real cursor each time
     rather than computing one jump.
+
+    x, y are in the 1080-tall picture (see VIRT_H); on a bigger or smaller
+    screen they're scaled to real pixels here, with more steps for the
+    longer way across.
     """
+    s = screen_scale()
+    if s != 1.0:
+        x, y = int(round(x * s)), int(round(y * s))
+        tries = int(round(tries * max(1.0, s)))
     for _ in range(tries):
         p = wintypes.POINT()
         _user32.GetCursorPos(ctypes.byref(p))
@@ -462,10 +470,10 @@ def bring_roblox_front():
     return False
 
 
-# Every click and every detector here is lined up for Roblox FULLSCREEN on a
-# 1920x1080 screen. In a window the title bar and taskbar shift everything, so
-# the macro puts it back in fullscreen itself.
-SUPPORTED_SCREEN = (1920, 1080)
+# Every click and every detector here is lined up for Roblox FULLSCREEN, and
+# was measured on a 1920x1080 screen. In a window the title bar and taskbar
+# shift everything, so the macro puts it back in fullscreen itself. Any other
+# 16:9 screen works through VIRT_H below.
 SCAN_F11 = 0x57
 # Roblox switches ITSELF to fullscreen part way through starting up when that
 # is the saved setting, and F11 is a toggle - pressed during that switch it
@@ -484,6 +492,52 @@ FULLSCREEN_SETTLE = 1.5
 def screen_size():
     """Primary screen in real pixels (CustomTkinter makes us DPI aware)."""
     return _user32.GetSystemMetrics(0), _user32.GetSystemMetrics(1)
+
+
+# Bigger (and smaller) screens. Everything was measured on 1920x1080, so on
+# any other screen the macro works in that same 1080-tall picture: every
+# screenshot is resized to 1080 tall before anything looks at it, every spot
+# it remembers is in that picture, and every click is scaled back up to the
+# real screen in move_to(). At exactly 1080 tall nothing is resized, so a
+# 1920x1080 screen behaves exactly as before.
+VIRT_H = 1080
+
+
+def screen_scale():
+    """Real pixels per pixel of the 1080-tall picture: 1.0 on 1920x1080,
+    1.333 on 2560x1440, 2.0 on 3840x2160."""
+    sh = screen_size()[1]
+    return sh / VIRT_H if sh > 0 else 1.0
+
+
+def virt_size():
+    """The main screen's size in the 1080-tall picture (1920x1080 for 16:9)."""
+    sw, sh = screen_size()
+    if sh <= 0:
+        return sw, sh
+    return int(round(sw * VIRT_H / sh)), VIRT_H
+
+
+def screen_supported(sw, sh):
+    """16:9 and at least 720 tall: 1920x1080, 2560x1440, 3840x2160, 1600x900,
+    1366x768... All of them become the same 1920x1080 picture. 16:10 and
+    ultrawide don't: Rivals lays its menus out differently there."""
+    return sh >= 720 and abs(sw / sh - 16 / 9) < 0.01
+
+
+def _virt(arr):
+    """A screenshot (numpy) resized to 1080 tall; untouched if it already is."""
+    h, w = arr.shape[:2]
+    if h == VIRT_H or h < 2:
+        return arr
+    size = (max(1, int(round(w * VIRT_H / h))), VIRT_H)
+    return cv2.resize(arr, size, interpolation=(cv2.INTER_AREA if h > VIRT_H
+                                                 else cv2.INTER_LINEAR))
+
+
+def grab_bgr():
+    """The main screen, BGR, in the 1080-tall picture."""
+    return _virt(np.array(ImageGrab.grab()))[:, :, ::-1]
 
 
 # Every click and detector is lined up for 100% Windows display scaling - the
@@ -540,13 +594,16 @@ def roblox_fullscreen(h):
 
 
 def cursor_pos():
+    """Where the cursor is, in the 1080-tall picture."""
     p = wintypes.POINT()
     _user32.GetCursorPos(ctypes.byref(p))
-    return int(p.x), int(p.y)
+    s = screen_scale()
+    return int(round(p.x / s)), int(round(p.y / s))
 
 
 def grab_gray():
-    return cv2.cvtColor(np.array(ImageGrab.grab()), cv2.COLOR_RGB2GRAY)
+    """The main screen, greyscale, in the 1080-tall picture."""
+    return _virt(cv2.cvtColor(np.array(ImageGrab.grab()), cv2.COLOR_RGB2GRAY))
 
 
 # ------------------------------------------------------------ detection ---
@@ -559,10 +616,50 @@ def load_cal():
         tile = cv2.imread(TEMPLATE_PATH, cv2.IMREAD_GRAYSCALE)
         if tile is None:
             return None, None
+        if cal_to_1080(cal):
+            tile = cv2.imread(TEMPLATE_PATH, cv2.IMREAD_GRAYSCALE)
         cal["_gl_tile"] = cv2.imread(GL_TEMPLATE_PATH, cv2.IMREAD_GRAYSCALE)
         return cal, tile
     except Exception:
         return None, None
+
+
+def cal_to_1080(cal):
+    """Setups taught before 1.1.3 were saved in the real screen's pixels. One
+    taught on a screen that isn't 1080 tall is moved into the 1080-tall
+    picture once: every spot and both pictures are resized and saved again
+    (the old files are kept next to them as .bak-native). True if it did."""
+    scr = cal.get("screen")
+    ok = isinstance(scr, list) and len(scr) == 2 and scr[1]
+    w, h = (scr[0], scr[1]) if ok else screen_size()
+    if not h or h == VIRT_H:
+        return False
+    f = VIRT_H / h
+
+    def pt(v):
+        return [int(round(v[0] * f)), int(round(v[1] * f))]
+
+    for key in ("anchor_offset", "gl_offset", "tab_offset", "gl_nudge"):
+        v = cal.get(key)
+        if isinstance(v, list) and len(v) == 2:
+            cal[key] = pt(v)
+    if isinstance(cal.get("ffa_path"), list):
+        cal["ffa_path"] = [pt(p) for p in cal["ffa_path"]]
+    if isinstance(cal.get("nudge3"), (int, float)):
+        cal["nudge3"] = int(round(cal["nudge3"] * f))
+    cal["screen"] = [int(round(w * f)), VIRT_H]
+    for path in (TEMPLATE_PATH, GL_TEMPLATE_PATH):
+        t = cv2.imread(path, cv2.IMREAD_GRAYSCALE) if os.path.exists(path) else None
+        if t is None:
+            continue
+        shutil.copy2(path, path + ".bak-native")
+        th, tw = t.shape
+        cv2.imwrite(path, cv2.resize(
+            t, (max(1, int(round(tw * f))), max(1, int(round(th * f)))),
+            interpolation=cv2.INTER_AREA if f < 1 else cv2.INTER_LINEAR))
+    shutil.copy2(CAL_PATH, CAL_PATH + ".bak-native")
+    save_cal(cal)
+    return True
 
 
 # How far the grid extends from Random - about five tiles across and four
@@ -774,7 +871,7 @@ def in_lobby():
     No false positives.
     """
     try:
-        img = np.array(ImageGrab.grab())[:, :, ::-1]      # RGB -> BGR
+        img = grab_bgr()
     except Exception:
         return None
     h, w = img.shape[:2]
@@ -814,7 +911,7 @@ def find_join_button():
     handling of its own - tapping space, which the macro does anyway, is it.
     """
     try:
-        img = np.array(ImageGrab.grab())[:, :, ::-1]      # RGB -> BGR
+        img = grab_bgr()
     except Exception:
         return None
     h, w = img.shape[:2]
@@ -869,33 +966,48 @@ def find_reconnect():
     screen, and fired on the weapon picker over a dark map (a 200x47 tab at
     650, 340). Clicking that, then still seeing it 6s later, restarts Roblox
     and throws away the session - so this pins the size, place and panel.
+
+    On another screen the dialog is looked for at more than one size: Roblox
+    may draw it in real pixels (it then looks smaller in the 1080-tall
+    picture on a bigger screen) or grown with Windows scaling, not with the
+    game picture. Sizes and places are measured from the screen's centre in
+    1080p pixels times k, so k = 1 on 1920x1080 is exactly the old test.
     """
     try:
-        img = np.array(ImageGrab.grab())[:, :, ::-1]      # RGB -> BGR
+        raw = np.array(ImageGrab.grab())
     except Exception:
         return None
+    s = raw.shape[0] / VIRT_H if raw.shape[0] else 1.0
+    img = _virt(raw)[:, :, ::-1]
     if float(img.mean()) > DIALOG_DARK:
         return None                                       # the game is running
 
+    ks = [1.0]
+    for k in (1.0 / s, display_scaling() / 100.0 / s):
+        if k > 0 and all(abs(k - o) > 0.04 for o in ks):
+            ks.append(k)
     h, w = img.shape[:2]
     white = cv2.inRange(img, (DIALOG_LIGHT,) * 3, (255, 255, 255))
     nlab, _, stats, cent = cv2.connectedComponentsWithStats(white, 8)
     best = None
-    for i in range(1, nlab):
+    for i, k in ((i, k) for i in range(1, nlab) for k in ks):
         x, y, bw, bh, area = stats[i]
-        # 175x36 is 0.091 x 0.033 of the screen
-        if not (0.075 * w <= bw <= 0.11 * w and 0.026 * h <= bh <= 0.042 * h):
+        # 175x36 on 1920x1080
+        if not (144 * k <= bw <= 211.2 * k and 28.08 * k <= bh <= 45.36 * k):
             continue
         if area < bw * bh * 0.55:           # a filled button, not an outline
             continue
         cx, cy = cent[i]
-        # (1052, 626) is 0.548, 0.580 - with room for the left-hand button
-        if not (0.44 * w < cx < 0.62 * w and 0.52 * h < cy < 0.66 * h):
+        # (1052, 626) on 1920x1080 is 92 right of and 86 below the centre -
+        # with room for the left-hand button
+        if not (-115.2 * k < cx - w / 2 < 230.4 * k
+                and 21.6 * k < cy - h / 2 < 172.8 * k):
             continue
         # the dialog's grey panel just above the button: neutral, not tinted.
         # Real ones measured B/G/R within 4 of each other; the picker's
         # "panel" was 25/49/81.
-        panel = img[max(0, y - 80):max(0, y - 40), x:x + bw].reshape(-1, 3)
+        panel = img[max(0, y - int(round(80 * k))):max(0, y - int(round(40 * k))),
+                    x:x + bw].reshape(-1, 3)
         if panel.size == 0:
             continue
         b, g, r = panel.mean(axis=0)
@@ -916,7 +1028,7 @@ def save_event_shot(tag, pos=None):
     """
     try:
         os.makedirs(EVENT_DIR, exist_ok=True)
-        img = np.array(ImageGrab.grab())[:, :, ::-1].copy()     # RGB -> BGR
+        img = grab_bgr().copy()
         if pos:
             p = (int(pos[0]), int(pos[1]))
             cv2.circle(img, p, 34, (0, 0, 255), 3)
@@ -2526,7 +2638,7 @@ class GlassMacro(ctk.CTk):
         self._tip_i = None
 
         sw, sh = screen_size()
-        self._screen_ok = (sw, sh) == SUPPORTED_SCREEN
+        self._screen_ok = screen_supported(sw, sh)
         self._scaling = display_scaling()
 
         # ---- the window: sidebar | 1px line | header / hairline / pages ----
@@ -4784,7 +4896,7 @@ class GlassMacro(ctk.CTk):
 
         self._keyed(ctk.CTkLabel(sp, text="", text_color=MUTED,
                                  font=self.F(11), height=16),
-                    f"GlassMacro {APP_VER} · made for 1920×1080 · "
+                    f"GlassMacro {APP_VER} · made for 16:9 screens · "
                     "{start} starts, {stop} stops").pack(pady=(18, 8))
 
     # ---- Stats: lifetime totals from stats.json ----
@@ -5751,18 +5863,18 @@ class GlassMacro(ctk.CTk):
 
     # ---- screen checks ----
     def _paint_res(self, sw, sh, pct):
-        screen_ok = (sw, sh) == SUPPORTED_SCREEN
+        screen_ok = screen_supported(sw, sh)
         scale_ok = pct == SUPPORTED_SCALING
         if screen_ok and scale_ok:
-            text, colour = "1920\u00d71080", MUTED
+            text, colour = f"{sw}\u00d7{sh}", MUTED
         elif scale_ok:
             text, colour = (f"{sw}\u00d7{sh} \u00b7 made for "
-                            f"1920\u00d71080"), AMBER
+                            f"16:9 screens"), AMBER
         elif screen_ok:
             text, colour = f"{pct}% scaling \u00b7 needs 100%", AMBER
         else:
             text, colour = (f"{sw}\u00d7{sh} at {pct}% \u00b7 needs "
-                            f"1920\u00d71080 at 100%"), AMBER
+                            f"16:9 at 100%"), AMBER
         self.lbl_res.configure(text=text, text_color=colour)
         about = getattr(self, "lbl_res_about", None)    # the About page's
         if about is not None:
@@ -5774,7 +5886,8 @@ class GlassMacro(ctk.CTk):
         if not self._screen_ok:
             sw, sh = screen_size()
             problems.append(f"This screen is {sw}\u00d7{sh}. GlassMacro only "
-                            f"works on 1920\u00d71080 for now.")
+                            f"works on 16:9 screens (like 1920\u00d71080 or "
+                            f"2560\u00d71440) for now.")
         if self._scaling != SUPPORTED_SCALING:
             problems.append(f"Windows scaling is {self._scaling}%. Set it to "
                             f"100% first: Settings \u203a System \u203a "
@@ -5792,7 +5905,7 @@ class GlassMacro(ctk.CTk):
         Without this, a warning stayed up after the user had fixed it -
         and during setup there is no Start to press to re-check."""
         (sw, sh), pct = screen_size(), display_scaling()
-        ok = (sw, sh) == SUPPORTED_SCREEN
+        ok = screen_supported(sw, sh)
         if ok == self._screen_ok and pct == self._scaling:
             return
         self._screen_ok = ok
@@ -5800,9 +5913,9 @@ class GlassMacro(ctk.CTk):
             self._scaling = pct
             self._paint_res(sw, sh, pct)
             self._paint_guide_warning()
-            self.log("screen check: 1920x1080 at 100% - all good now")
+            self.log(f"screen check: {sw}x{sh} at 100% - all good now")
             if not self.running and self._state_title in (
-                    "Set scaling to 100%", "Made for 1920\u00d71080"):
+                    "Set scaling to 100%", "Made for 16:9 screens"):
                 self._show_cal()             # back to Ready
         else:
             self._warn_display()             # logs, and repaints the header
@@ -5841,9 +5954,10 @@ class GlassMacro(ctk.CTk):
         current in between."""
         (sw, sh), pct = screen_size(), display_scaling()
         self._scaling = pct
-        if (sw, sh) != SUPPORTED_SCREEN:
+        if not screen_supported(sw, sh):
             self.log(f"heads up: this screen is {sw}x{sh} - GlassMacro is made "
-                     f"for 1920x1080, so clicks may miss")
+                     f"for 16:9 screens like 1920x1080 or 2560x1440, so "
+                     f"clicks may miss")
         if pct != SUPPORTED_SCALING:
             self.log(f"heads up: Windows scaling is {pct}% - GlassMacro needs "
                      f"100% (Settings > System > Display > Scale), so clicks "
@@ -5853,12 +5967,13 @@ class GlassMacro(ctk.CTk):
                          f"{pct}% its clicks land in the wrong place.\n\n"
                          "Set it to 100% in Settings \u203a System \u203a "
                          "Display \u203a Scale.")
-        elif (sw, sh) != SUPPORTED_SCREEN:
+        elif not screen_supported(sw, sh):
             self._notify(f"This screen is {sw}\u00d7{sh}",
-                         "GlassMacro only works on 1920\u00d71080 screens for "
-                         "now, so its clicks may land in the wrong place.")
+                         "GlassMacro only works on 16:9 screens (like "
+                         "1920\u00d71080, 2560\u00d71440 or 3840\u00d72160) "
+                         "for now, so its clicks may land in the wrong place.")
         try:
-            self._screen_ok = (sw, sh) == SUPPORTED_SCREEN
+            self._screen_ok = screen_supported(sw, sh)
             self._paint_res(sw, sh, pct)
             self._paint_guide_warning()
         except Exception:
@@ -6392,7 +6507,7 @@ class GlassMacro(ctk.CTk):
          "Windows is at {n}%. Set it to 100% in Settings \u203a System "
          "\u203a Display \u203a Scale - this clears by itself.", "AMBER",
          None),
-        ("heads up: this screen is", "Made for 1920×1080",
+        ("heads up: this screen is", "Made for 16:9 screens",
          "This screen is different, so clicks may land in the wrong place.",
          "AMBER", None),
         ("calibrate first", "Set up your weapons first",
@@ -6464,12 +6579,12 @@ class GlassMacro(ctk.CTk):
          "Back to fullscreen", "pressed F11"),
         ("couldn't make Roblox fullscreen", "nofs", "!", "AMBER",
          "Roblox isn't fullscreen", "press F11 in Roblox"),
-        ("screen check: 1920x1080 at 100%", "screenok", "\u2713", "GREEN",
-         "Screen settings look right", "1920\u00d71080 at 100%"),
+        ("screen check:", "screenok", "\u2713", "GREEN",
+         "Screen settings look right", "16:9 at 100%"),
         ("heads up: Windows scaling is", "scaling", "!", "AMBER",
          "Scaling isn't 100%", "set it to 100% in Windows display settings"),
         ("heads up: this screen is", "screen", "!", "AMBER",
-         "Screen isn't 1920×1080", "clicks may miss"),
+         "Screen isn't 16:9", "clicks may miss"),
         ("NOTE: those two points are almost", "needsetup", "!", "AMBER",
          "Setup needs redoing", "the same spot was hovered twice"),
         ("updated: GlassMacro", "updated", "\u2713", "GREEN",
@@ -7880,7 +7995,7 @@ class GlassMacro(ctk.CTk):
                 last_stall_shot = time.time()
                 try:
                     os.makedirs(STALL_DIR, exist_ok=True)
-                    img = np.array(ImageGrab.grab())[:, :, ::-1]
+                    img = grab_bgr()
                     nm = time.strftime("%m%d_%H%M%S") + "_stall.png"
                     cv2.imwrite(os.path.join(STALL_DIR, nm), img)
                     trim_folder(STALL_DIR, KEEP_STALLS)
@@ -7945,7 +8060,7 @@ class GlassMacro(ctk.CTk):
         """Save what the screen looked like, with the click marked."""
         try:
             os.makedirs(SHOT_DIR, exist_ok=True)
-            img = np.array(ImageGrab.grab())[:, :, ::-1].copy()   # RGB -> BGR
+            img = grab_bgr().copy()
             # where Random was matched
             cv2.circle(img, (int(pos[0]), int(pos[1])), 26, (0, 255, 0), 3)
             cv2.putText(img, "RANDOM", (int(pos[0]) - 40, int(pos[1]) - 34),

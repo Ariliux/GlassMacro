@@ -32,8 +32,9 @@ It got me the wrap, and I left it running for 10+ hours straight with no issues 
 ## What you need
 
 - Windows 10 or 11
-- A **1920×1080** screen. Other sizes aren't supported yet, and the app tells you if yours
-  is different. Bigger screens are planned for a future update.
+- A **16:9** screen: 1920×1080, 2560×1440, 3840×2160 and other 16:9 sizes all work. It was
+  tuned on 1920×1080, and on other sizes it scales everything from that. 16:10 and ultrawide
+  screens aren't supported yet, and the app tells you if yours is one of those.
 - Windows display scaling at **100%**. If yours is different, change it in Settings →
   System → Display → **Scale** before using the macro. The app pops up a warning if it isn't.
 - Roblox Rivals, obviously

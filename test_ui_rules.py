@@ -148,11 +148,24 @@ check(app.txt._textbox.get("1.0", "end").count("heads up") == before,
       "at 100% there is no heads-up at all")
 check(app.lbl_res.cget("text") == "1920×1080",
       "at 100% the header goes back to plain 1920x1080")
-G.screen_size = lambda: (2560, 1440)
+G.screen_size = lambda: (2560, 1080)                  # ultrawide: not 16:9
 G.display_scaling = lambda: 125
 app._warn_display()
 check("2560" in app.lbl_res.cget("text") and "125%" in app.lbl_res.cget("text"),
       f"both wrong: header names both ({app.lbl_res.cget('text')!r})")
+# bigger 16:9 screens are fine now
+G.display_scaling = lambda: 100
+for size in ((2560, 1440), (3840, 2160), (1366, 768)):
+    G.screen_size = lambda size=size: size
+    before = app.txt._textbox.get("1.0", "end").count("heads up")
+    app._warn_display()
+    app.update()
+    want = f"{size[0]}×{size[1]}"
+    check(app.txt._textbox.get("1.0", "end").count("heads up") == before
+          and app.lbl_res.cget("text") == want,
+          f"{size[0]}x{size[1]} at 100%: no heads-up, header says {want}")
+for size in ((1920, 1200), (3440, 1440), (1280, 600)):
+    check(not G.screen_supported(*size), f"{size[0]}x{size[1]} is not supported")
 
 # fixing scaling WHILE THE APP IS OPEN clears every warning by itself - even
 # during setup, where there is no Start button to press
@@ -208,7 +221,7 @@ G.display_scaling = lambda: 100
 app._warn_display()
 wait_for(2)
 check(len(_FakeNotifier.shown) == 1, "at 100% there is no pop-up")
-G.screen_size = lambda: (2560, 1440)
+G.screen_size = lambda: (2560, 1080)
 app._warn_display()
 wait_for(2)
 check(len(_FakeNotifier.shown) == 2 and "2560" in _FakeNotifier.shown[1][0],
