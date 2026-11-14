@@ -126,61 +126,75 @@ check("×2" in first, "two picks in a row merge into one row with x2")
 check("random 1/3" not in first and "match 1.00" not in first,
       "developer detail stays out of the feed")
 
-# Windows scaling: 150% must warn everywhere, 100% must say nothing
+# Windows scaling: fine while Rivals still gets a layout 720 tall (1080p: up to
+# 150%). Past that it must warn everywhere; within it, say nothing.
 real_scaling, real_size = G.display_scaling, G.screen_size
 G.screen_size = lambda: (1920, 1080)
-G.display_scaling = lambda: 150
+G.display_scaling = lambda: 175
 lines_before = app.txt._textbox.get("1.0", "end").count("heads up")
 app._warn_display()
 app.update()
-check(app._state_title == "Set scaling to 100%",
-      f"150% scaling: card says {app._state_title!r}")
-check("150%" in app.lbl_detail.cget("text"), "the card names the current 150%")
-check(app.lbl_res.cget("text").startswith("150% scaling"),
-      f"header warns: {app.lbl_res.cget('text')!r}")
-check("Scaling isn't 100%" in app.feed._textbox.get("1.0", "1.end"),
-      "the feed says scaling isn't 100%")
-G.display_scaling = lambda: 100
-before = app.txt._textbox.get("1.0", "end").count("heads up")
-app._warn_display()
-app.update()
-check(app.txt._textbox.get("1.0", "end").count("heads up") == before,
-      "at 100% there is no heads-up at all")
-check(app.lbl_res.cget("text") == "1920×1080",
-      "at 100% the header goes back to plain 1920x1080")
-G.screen_size = lambda: (2560, 1080)                  # ultrawide: not 16:9
-G.display_scaling = lambda: 125
-app._warn_display()
-check("2560" in app.lbl_res.cget("text") and "125%" in app.lbl_res.cget("text"),
-      f"both wrong: header names both ({app.lbl_res.cget('text')!r})")
-# bigger 16:9 screens are fine now
-G.display_scaling = lambda: 100
-for size in ((2560, 1440), (3840, 2160), (1366, 768)):
-    G.screen_size = lambda size=size: size
+check(app._state_title == "Lower Windows scaling",
+      f"175% scaling on 1080p: card says {app._state_title!r}")
+check("175%" in app.lbl_detail.cget("text"), "the card names the current 175%")
+check(app.lbl_res.cget("text").startswith("175% scaling")
+      and "150% or less" in app.lbl_res.cget("text"),
+      f"header warns and says what would work: {app.lbl_res.cget('text')!r}")
+check("Too much Windows scaling" in app.feed._textbox.get("1.0", "1.end"),
+      "the feed says there is too much scaling")
+for pct, want in ((100, "1920×1080"), (125, "1920×1080 · 125%"),
+                  (150, "1920×1080 · 150%")):
+    G.display_scaling = lambda pct=pct: pct
     before = app.txt._textbox.get("1.0", "end").count("heads up")
     app._warn_display()
     app.update()
-    want = f"{size[0]}×{size[1]}"
+    check(app.txt._textbox.get("1.0", "end").count("heads up") == before,
+          f"at {pct}% there is no heads-up at all")
+    check(app.lbl_res.cget("text") == want,
+          f"at {pct}% the header just says {want!r} "
+          f"({app.lbl_res.cget('text')!r})")
+G.screen_size = lambda: (1280, 1024)                  # 5:4, and too much scaling
+G.display_scaling = lambda: 175
+app._warn_display()
+check("1280" in app.lbl_res.cget("text") and "175%" in app.lbl_res.cget("text"),
+      f"both wrong: header names both ({app.lbl_res.cget('text')!r})")
+# bigger screens, 16:10 and ultrawide are fine now - and 4K at its usual 150%
+for size, pct in (((2560, 1440), 100), ((3840, 2160), 100), ((1366, 768), 100),
+                  ((1920, 1200), 100), ((2560, 1080), 100), ((3440, 1440), 100),
+                  ((3840, 2160), 150), ((2560, 1440), 125)):
+    G.screen_size = lambda size=size: size
+    G.display_scaling = lambda pct=pct: pct
+    before = app.txt._textbox.get("1.0", "end").count("heads up")
+    app._warn_display()
+    app.update()
+    want = f"{size[0]}×{size[1]}" + ("" if pct == 100 else f" · {pct}%")
     check(app.txt._textbox.get("1.0", "end").count("heads up") == before
           and app.lbl_res.cget("text") == want,
-          f"{size[0]}x{size[1]} at 100%: no heads-up, header says {want}")
-for size in ((1920, 1200), (3440, 1440), (1280, 600)):
+          f"{size[0]}x{size[1]} at {pct}%: no heads-up, header says {want}")
+for size in ((1280, 1024), (2256, 1504), (5120, 1440), (1280, 600)):
     check(not G.screen_supported(*size), f"{size[0]}x{size[1]} is not supported")
+G.screen_size = lambda: (1366, 768)                   # a small laptop at 125%
+G.display_scaling = lambda: 125
+app._warn_display()
+app.update()
+check("needs 100% or less" in app.lbl_res.cget("text"),
+      f"768 tall at 125%: told to use 100% ({app.lbl_res.cget('text')!r})")
 
 # fixing scaling WHILE THE APP IS OPEN clears every warning by itself - even
 # during setup, where there is no Start button to press
 G.screen_size = lambda: (1920, 1080)
+G.display_scaling = lambda: 175
+app._recheck_display()
+app.update()
+check(bool(app._warn_box.winfo_manager()) and "175%" in app.lbl_warn.cget("text")
+      and "150% or less" in app.lbl_warn.cget("text"),
+      "setup guide shows the scaling box at 175%, naming 150%")
 G.display_scaling = lambda: 150
 app._recheck_display()
 app.update()
-check(bool(app._warn_box.winfo_manager()) and "150%" in app.lbl_warn.cget("text"),
-      "setup guide shows the scaling box at 150%")
-G.display_scaling = lambda: 100
-app._recheck_display()
-app.update()
 check(not app._warn_box.winfo_manager(),
-      "after switching to 100% the guide's box disappears on its own")
-check(app.lbl_res.cget("text") == "1920×1080",
+      "after switching to 150% the guide's box disappears on its own")
+check(app.lbl_res.cget("text") == "1920×1080 · 150%",
       "...and the header goes back to normal")
 check("Screen settings look right" in app.feed._textbox.get("1.0", "1.end"),
       "...and the feed says the screen settings look right")
@@ -188,6 +202,9 @@ before = app.txt._textbox.get("1.0", "end").count("screen check")
 app._recheck_display()
 check(app.txt._textbox.get("1.0", "end").count("screen check") == before,
       "nothing changed = nothing logged (no spam every 5 seconds)")
+G.display_scaling = lambda: 100
+app._recheck_display()
+app.update()
 
 # the warning pop-up (faked here - tests never open real ones)
 import time as _time                                         # noqa: E402
@@ -205,34 +222,68 @@ _FakeNotifier.shown.clear()
 if hasattr(app, "_popup"):
     del app._popup
 G.screen_size = lambda: (1920, 1080)
-G.display_scaling = lambda: 150
+G.display_scaling = lambda: 175
 app._warn_display()
 wait_for(1)
 check(len(_FakeNotifier.shown) == 1
-      and _FakeNotifier.shown[0][0] == "Windows scaling is 150%"
-      and "Settings" in _FakeNotifier.shown[0][1],
-      f"150%: one pop-up, naming 150% and where to fix it ({_FakeNotifier.shown})")
+      and _FakeNotifier.shown[0][0] == "Windows scaling is 175%"
+      and "Settings" in _FakeNotifier.shown[0][1]
+      and "150% or less" in _FakeNotifier.shown[0][1],
+      f"175%: one pop-up, naming 175%, what works and where to fix it ({_FakeNotifier.shown})")
 app._warn_display()
 wait_for(2)
 check(len(_FakeNotifier.shown) == 1,
       "a second warning within a minute does NOT pop up again")
 app._popup.last = 0.0                         # a minute later...
+for pct in (100, 125, 150):
+    G.display_scaling = lambda pct=pct: pct
+    app._warn_display()
+    wait_for(2)
+    check(len(_FakeNotifier.shown) == 1, f"at {pct}% there is no pop-up")
 G.display_scaling = lambda: 100
+G.screen_size = lambda: (1280, 1024)
 app._warn_display()
 wait_for(2)
-check(len(_FakeNotifier.shown) == 1, "at 100% there is no pop-up")
-G.screen_size = lambda: (2560, 1080)
-app._warn_display()
-wait_for(2)
-check(len(_FakeNotifier.shown) == 2 and "2560" in _FakeNotifier.shown[1][0],
-      "a wrong screen size pops up too")
+check(len(_FakeNotifier.shown) == 2 and "1280" in _FakeNotifier.shown[1][0],
+      "a wrong screen shape pops up too")
 app._popup.last = 0.0
 app._popup.open = True                        # one already on screen
-G.display_scaling = lambda: 150
+G.display_scaling = lambda: 175
 app._warn_display()
 wait_for(3)
 check(len(_FakeNotifier.shown) == 2, "never two pop-ups at once")
 app._popup.open = False
+
+# a weapon setup only fits the layout it was made on: after a change of
+# scaling (or screen) the app must say so, once, in plain words
+G.screen_size = lambda: (1920, 1080)
+app._popup.last = 0.0
+_FakeNotifier.shown.clear()
+kept_cal = app.cal
+app.cal = dict(kept_cal or {}, layout=[1920, 1080])
+G.display_scaling = lambda: 100
+before = app.txt._textbox.get("1.0", "end").count("weapon setup was made")
+app._warn_display()
+wait_for(1)
+check(app.txt._textbox.get("1.0", "end").count("weapon setup was made") == before
+      and not _FakeNotifier.shown, "same layout as the setup: nothing said")
+G.display_scaling = lambda: 150
+app._warn_display()
+app.update()
+wait_for(1)
+check(app.txt._textbox.get("1.0", "end").count("weapon setup was made") == before + 1,
+      "setup made at 100%, now 150%: the log says to redo the weapon setup")
+check(app._state_title == "Redo the weapon setup",
+      f"...the card says so too ({app._state_title!r})")
+check(len(_FakeNotifier.shown) == 1 and _FakeNotifier.shown[0][0] == "Redo the weapon setup",
+      f"...and one pop-up ({_FakeNotifier.shown})")
+app.cal = dict(kept_cal or {}, layout=[1920, 720])
+app._popup.last = 0.0
+before = app.txt._textbox.get("1.0", "end").count("weapon setup was made")
+app._warn_display()
+check(app.txt._textbox.get("1.0", "end").count("weapon setup was made") == before,
+      "a setup MADE at 150% is fine at 150%")
+app.cal = kept_cal
 G.display_scaling, G.screen_size = real_scaling, real_size
 
 # a run stopped within a second must report ITS length, not the last run's

@@ -32,11 +32,15 @@ It got me the wrap, and I left it running for 10+ hours straight with no issues 
 ## What you need
 
 - Windows 10 or 11
-- A **16:9** screen: 1920×1080, 2560×1440, 3840×2160 and other 16:9 sizes all work. It was
-  tuned on 1920×1080, and on other sizes it scales everything from that. 16:10 and ultrawide
-  screens aren't supported yet, and the app tells you if yours is one of those.
-- Windows display scaling at **100%**. If yours is different, change it in Settings →
-  System → Display → **Scale** before using the macro. The app pops up a warning if it isn't.
+- A **widescreen**: 16:9 (1920×1080, 2560×1440, 3840×2160...), 16:10 (1920×1200, 2560×1600)
+  or 21:9 ultrawide (2560×1080, 3440×1440). It was tuned on 1920×1080, and on other screens
+  it scales everything from that. Squarer screens (4:3, 3:2) and 32:9 aren't supported yet,
+  and the app tells you if yours is one of those.
+- Windows display scaling up to **150%** on a 1080p screen (bigger screens can go higher:
+  200% on 1440p, 300% on 4K). If yours is too high, the app pops up a warning that says what
+  to set it to, in Settings → System → Display → **Scale**.
+- If you change your scaling or your screen later, redo the weapon setup once. The app
+  reminds you.
 - Roblox Rivals, obviously
 
 ## Installing it

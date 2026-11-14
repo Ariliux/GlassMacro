@@ -35,7 +35,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import keyboard
 
-APP_NAME, APP_VER = "GlassMacro", "1.1.3"
+APP_NAME, APP_VER = "GlassMacro", "1.1.4"
 
 # Calibration lives in AppData, never beside the exe: a PyInstaller onefile
 # build unpacks to a temp folder that is deleted on exit, so anything saved
@@ -473,7 +473,7 @@ def bring_roblox_front():
 # Every click and every detector here is lined up for Roblox FULLSCREEN, and
 # was measured on a 1920x1080 screen. In a window the title bar and taskbar
 # shift everything, so the macro puts it back in fullscreen itself. Any other
-# 16:9 screen works through VIRT_H below.
+# widescreen works through VIRT_H below.
 SCAN_F11 = 0x57
 # Roblox switches ITSELF to fullscreen part way through starting up when that
 # is the saved setting, and F11 is a toggle - pressed during that switch it
@@ -519,10 +519,13 @@ def virt_size():
 
 
 def screen_supported(sw, sh):
-    """16:9 and at least 720 tall: 1920x1080, 2560x1440, 3840x2160, 1600x900,
-    1366x768... All of them become the same 1920x1080 picture. 16:10 and
-    ultrawide don't: Rivals lays its menus out differently there."""
-    return sh >= 720 and abs(sw / sh - 16 / 9) < 0.01
+    """Widescreens from 16:10 through 16:9 to 21:9, at least 720 tall:
+    1920x1080, 2560x1440, 3840x2160, 1366x768, 1920x1200, 2560x1600,
+    2560x1080, 3440x1440... Rivals keeps its menus centred and sizes them by
+    the screen's height on all of those - measured on real 16:9, 16:10 and
+    21:9 layouts (2026-11-13). Squarer screens (3:2, 4:3) and 32:9 were
+    never measured, so they still get the warning."""
+    return sh >= 720 and 1.55 <= sw / sh <= 2.45
 
 
 def _virt(arr):
@@ -540,9 +543,58 @@ def grab_bgr():
     return _virt(np.array(ImageGrab.grab()))[:, :, ::-1]
 
 
-# Every click and detector is lined up for 100% Windows display scaling - the
-# only setup GlassMacro is tested on. A 1080p laptop usually ships at 150%.
-SUPPORTED_SCALING = 100
+# Windows display scaling. Roblox lays its menus out for a screen of
+# (size / scaling) and draws them that much bigger: 1920x1080 at 150% shows
+# the layout of a 1280x720 screen. Rivals' menus were measured on layouts from
+# 720 to 1080 tall (2026-11-13, a Roblox window of each size - a window at
+# 100% lays out exactly like a screen at that scaling). Below 720 they were
+# never seen, so that is where the warning starts.
+SUPPORTED_SCALING = 100             # the answer when Windows won't say
+MIN_LAYOUT_H = 720
+SCALINGS = (100, 125, 150, 175, 200, 225, 250, 300, 350)
+
+
+def layout_height(sh=None, pct=None):
+    """How tall Roblox lays its menus out for: the screen's height divided by
+    Windows scaling. 1080 at 150% -> 720; 2160 at 150% -> 1440."""
+    sh = screen_size()[1] if sh is None else sh
+    pct = display_scaling() if pct is None else pct
+    return sh * 100.0 / max(1, pct)
+
+
+def scaling_supported(sh, pct):
+    """This much Windows scaling still leaves Rivals a layout 720 tall."""
+    return layout_height(sh, pct) >= MIN_LAYOUT_H - 0.5
+
+
+def best_scaling(sh):
+    """The most Windows scaling a screen this tall can have: 150 for 1080."""
+    return max([p for p in SCALINGS if scaling_supported(sh, p)] or [100])
+
+
+def layout_tag(sw=None, sh=None, pct=None):
+    """[width, height] of the layout Rivals is using right now, with the width
+    taken at 1080 tall: [1920, 1080] on plain 1080p, [1920, 720] at 150%,
+    [2580, 1080] on an ultrawide. Saved with the weapon setup, which only fits
+    the layout it was made on."""
+    if sw is None or sh is None:
+        sw, sh = screen_size()
+    if sh <= 0:
+        return [0, 0]
+    return [int(round(sw * VIRT_H / sh)), int(round(layout_height(sh, pct)))]
+
+
+def ui_growth(sh=None, pct=None):
+    """How much bigger Rivals draws its weapon tiles in the 1080-tall picture
+    than on a plain 1920x1080 screen at 100%.
+
+    Not 1.0, and not the scaling either: measured from Random to the launcher
+    tile, 631px on a 1080-tall layout, 660 on 864 (1080p at 125%) and 688 on
+    720 (150%). About 18% of a tile's size does not shrink with the layout.
+    On a bigger layout (4K at 100%) the same rule makes them a little smaller.
+    """
+    lh = layout_height(sh, pct)
+    return 1.0 + 0.18 * (VIRT_H / lh - 1.0) if lh > 0 else 1.0
 
 
 def display_scaling():
@@ -618,6 +670,11 @@ def load_cal():
             return None, None
         if cal_to_1080(cal):
             tile = cv2.imread(TEMPLATE_PATH, cv2.IMREAD_GRAYSCALE)
+        if not isinstance(cal.get("layout"), list):
+            # a setup from before 1.1.4: taken to be made on this layout, so
+            # a LATER change of screen or scaling can be noticed
+            cal["layout"] = layout_tag()
+            save_cal(cal)
         cal["_gl_tile"] = cv2.imread(GL_TEMPLATE_PATH, cv2.IMREAD_GRAYSCALE)
         return cal, tile
     except Exception:
@@ -682,10 +739,11 @@ def find_launcher_in_grid(cal, random_pos, threshold):
         return 0.0, None
     h, w = shot.shape
     th, tw = gl.shape
-    x0 = max(0, random_pos[0] - GRID_LEFT)
-    y0 = max(0, random_pos[1] - GRID_UP)
-    x1 = min(w, random_pos[0] + GRID_RIGHT)
-    y1 = min(h, random_pos[1] + GRID_DOWN)
+    g = max(1.0, ui_growth())       # with Windows scaling the tiles are bigger
+    x0 = max(0, random_pos[0] - int(GRID_LEFT * g))
+    y0 = max(0, random_pos[1] - int(GRID_UP * g))
+    x1 = min(w, random_pos[0] + int(GRID_RIGHT * g))
+    y1 = min(h, random_pos[1] + int(GRID_DOWN * g))
     win = shot[y0:y1, x0:x1]
     if win.shape[0] < th or win.shape[1] < tw:
         return 0.0, None
@@ -890,6 +948,56 @@ def in_lobby():
             continue
         return (float(cx), float(cy))
     return None
+
+
+def find_play_button():
+    """Where to click the main hub's green Play button, or None.
+
+    in_lobby() above knows the Free For All server's lobby. A fresh start, or
+    being sent back, lands in the MAIN hub instead: no red button there, just
+    this green Play one at the bottom centre.
+
+    Found by colour rather than clicked at a remembered spot, because a red
+    "Claim your FREE reward now!" banner often covers its lower half - and
+    with Windows scaling the button is bigger and sits higher, so the old spot
+    (960, 886) lands on the banner at 125% and 150%. The click goes to the
+    middle of the green that is showing.
+
+    Measured on eight layouts (16:9, 16:10 and 21:9, 720 to 1080 tall), with
+    and without the banner: the visible green is 222-256 wide and 39-63 tall,
+    centred across, between 0.76 and 0.86 of the way down. Checked against
+    400 other screenshots - menus, picker, spectate, in-game and the death
+    screen, whose green Respawn button is the same width but higher up (0.72).
+    """
+    try:
+        img = grab_bgr()
+    except Exception:
+        return None
+    h, w = img.shape[:2]
+    y0 = int(0.70 * h)
+    band = np.ascontiguousarray(img[y0:int(0.92 * h)])
+    hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, (35, 110, 120), (80, 255, 255))
+    nlab, _, stats, cent = cv2.connectedComponentsWithStats(mask, 8)
+    best = None
+    for i in range(1, nlab):
+        x, y, bw, bh, area = (int(v) for v in stats[i])
+        cx, cy = float(cent[i][0]), float(cent[i][1]) + y0
+        if not (170 <= bw <= 300 and 16 <= bh <= 90):
+            continue
+        if abs(cx - w / 2) > 50 or not 0.75 * h <= cy <= 0.88 * h:
+            continue
+        if area < bw * bh * 0.50:           # a filled button, text and all
+            continue
+        if best is None or area > best[2]:
+            best = (x + bw / 2.0, y0 + y + bh * 0.45, area)
+    return (float(best[0]), float(best[1])) if best else None
+
+
+def at_hub():
+    """Somewhere the menu has to be walked from: the Free For All lobby (red
+    To Hub button) or the main hub (green Play button)."""
+    return in_lobby() or find_play_button()
 
 
 def find_join_button():
@@ -4896,7 +5004,7 @@ class GlassMacro(ctk.CTk):
 
         self._keyed(ctk.CTkLabel(sp, text="", text_color=MUTED,
                                  font=self.F(11), height=16),
-                    f"GlassMacro {APP_VER} · made for 16:9 screens · "
+                    f"GlassMacro {APP_VER} · made for widescreens · "
                     "{start} starts, {stop} stops").pack(pady=(18, 8))
 
     # ---- Stats: lifetime totals from stats.json ----
@@ -5864,17 +5972,19 @@ class GlassMacro(ctk.CTk):
     # ---- screen checks ----
     def _paint_res(self, sw, sh, pct):
         screen_ok = screen_supported(sw, sh)
-        scale_ok = pct == SUPPORTED_SCALING
+        scale_ok = scaling_supported(sh, pct)
         if screen_ok and scale_ok:
-            text, colour = f"{sw}\u00d7{sh}", MUTED
+            text, colour = (f"{sw}\u00d7{sh}" if pct == 100 else
+                            f"{sw}\u00d7{sh} \u00b7 {pct}%"), MUTED
         elif scale_ok:
             text, colour = (f"{sw}\u00d7{sh} \u00b7 made for "
-                            f"16:9 screens"), AMBER
+                            f"widescreens"), AMBER
         elif screen_ok:
-            text, colour = f"{pct}% scaling \u00b7 needs 100%", AMBER
+            text, colour = (f"{pct}% scaling \u00b7 needs "
+                            f"{best_scaling(sh)}% or less"), AMBER
         else:
-            text, colour = (f"{sw}\u00d7{sh} at {pct}% \u00b7 needs "
-                            f"16:9 at 100%"), AMBER
+            text, colour = (f"{sw}\u00d7{sh} at {pct}% \u00b7 not "
+                            f"supported"), AMBER
         self.lbl_res.configure(text=text, text_color=colour)
         about = getattr(self, "lbl_res_about", None)    # the About page's
         if about is not None:
@@ -5885,13 +5995,15 @@ class GlassMacro(ctk.CTk):
         problems = []
         if not self._screen_ok:
             sw, sh = screen_size()
-            problems.append(f"This screen is {sw}\u00d7{sh}. GlassMacro only "
-                            f"works on 16:9 screens (like 1920\u00d71080 or "
-                            f"2560\u00d71440) for now.")
-        if self._scaling != SUPPORTED_SCALING:
-            problems.append(f"Windows scaling is {self._scaling}%. Set it to "
-                            f"100% first: Settings \u203a System \u203a "
-                            f"Display \u203a Scale.")
+            problems.append(f"This screen is {sw}\u00d7{sh}. GlassMacro works "
+                            f"on widescreens: 16:9 (like 1920\u00d71080), "
+                            f"16:10 and 21:9 ultrawide.")
+        tall = screen_size()[1]
+        if not scaling_supported(tall, self._scaling):
+            problems.append(f"Windows scaling is {self._scaling}%, too much "
+                            f"for this screen. Set it to "
+                            f"{best_scaling(tall)}% or less: Settings \u203a "
+                            f"System \u203a Display \u203a Scale.")
         if problems:
             self.lbl_warn.configure(text="\n".join(problems))
             if not self._warn_box.winfo_manager():
@@ -5909,13 +6021,13 @@ class GlassMacro(ctk.CTk):
         if ok == self._screen_ok and pct == self._scaling:
             return
         self._screen_ok = ok
-        if ok and pct == SUPPORTED_SCALING:
+        if ok and scaling_supported(sh, pct):
             self._scaling = pct
             self._paint_res(sw, sh, pct)
             self._paint_guide_warning()
-            self.log(f"screen check: {sw}x{sh} at 100% - all good now")
+            self.log(f"screen check: {sw}x{sh} at {pct}% - all good now")
             if not self.running and self._state_title in (
-                    "Set scaling to 100%", "Made for 16:9 screens"):
+                    "Lower Windows scaling", "Made for widescreens"):
                 self._show_cal()             # back to Ready
         else:
             self._warn_display()             # logs, and repaints the header
@@ -5948,6 +6060,26 @@ class GlassMacro(ctk.CTk):
                 f"warning pop-up shown: {headline} ({c or 'not shown'})"))
         threading.Thread(target=run, daemon=True).start()
 
+    def _warn_old_setup(self, sw, sh, pct):
+        """The weapon setup is three spots and two small pictures taken on ONE
+        layout. Windows scaling changes the size of the tiles (4-9% bigger at
+        125-150%), so a setup made before a change no longer matches. Say so,
+        rather than sit in a match never picking a weapon."""
+        was = (self.cal or {}).get("layout")
+        if not (isinstance(was, list) and len(was) == 2 and was[1]):
+            return
+        now = layout_tag(sw, sh, pct)
+        if (abs(was[0] - now[0]) <= now[0] * 0.02
+                and abs(was[1] - now[1]) <= now[1] * 0.02):
+            return
+        self.log("heads up: the weapon setup was made on a different screen "
+                 "layout - redo the weapon setup so the picker is recognised")
+        self._notify("Redo the weapon setup",
+                     "Your screen or its Windows scaling changed since you "
+                     "set up your weapons, so GlassMacro can't recognise the "
+                     "weapon picker any more.\n\n"
+                     "Redo the weapon setup - it only takes three hovers.")
+
     def _warn_display(self):
         """A heads-up for each thing about this screen GlassMacro can't
         handle. Runs at open and on every Start; _recheck_display keeps it
@@ -5956,22 +6088,27 @@ class GlassMacro(ctk.CTk):
         self._scaling = pct
         if not screen_supported(sw, sh):
             self.log(f"heads up: this screen is {sw}x{sh} - GlassMacro is made "
-                     f"for 16:9 screens like 1920x1080 or 2560x1440, so "
-                     f"clicks may miss")
-        if pct != SUPPORTED_SCALING:
-            self.log(f"heads up: Windows scaling is {pct}% - GlassMacro needs "
-                     f"100% (Settings > System > Display > Scale), so clicks "
-                     f"may miss")
+                     f"for widescreens (16:9, 16:10 and 21:9), so clicks may "
+                     f"miss")
+        if not scaling_supported(sh, pct):
+            most = best_scaling(sh)
+            self.log(f"heads up: Windows scaling is {pct}% - on this screen "
+                     f"GlassMacro needs {most}% or less (Settings > System > "
+                     f"Display > Scale), so clicks may miss")
             self._notify(f"Windows scaling is {pct}%",
-                         "GlassMacro only works at 100% scaling - at "
-                         f"{pct}% its clicks land in the wrong place.\n\n"
-                         "Set it to 100% in Settings \u203a System \u203a "
-                         "Display \u203a Scale.")
+                         f"That is too much for a {sw}\u00d7{sh} screen: "
+                         "Roblox's menus get too crowded for GlassMacro to "
+                         "read.\n\n"
+                         f"Set it to {most}% or less in Settings \u203a "
+                         "System \u203a Display \u203a Scale.")
         elif not screen_supported(sw, sh):
             self._notify(f"This screen is {sw}\u00d7{sh}",
-                         "GlassMacro only works on 16:9 screens (like "
-                         "1920\u00d71080, 2560\u00d71440 or 3840\u00d72160) "
-                         "for now, so its clicks may land in the wrong place.")
+                         "GlassMacro works on widescreens - 16:9 (like "
+                         "1920\u00d71080 or 2560\u00d71440), 16:10 and 21:9 "
+                         "ultrawide - so on this one its clicks may land in "
+                         "the wrong place.")
+        else:
+            self._warn_old_setup(sw, sh, pct)
         try:
             self._screen_ok = screen_supported(sw, sh)
             self._paint_res(sw, sh, pct)
@@ -6503,12 +6640,15 @@ class GlassMacro(ctk.CTk):
         ("couldn't make Roblox fullscreen", "Roblox isn't fullscreen",
          "Press F11 in Roblox · clicks can miss in a window.",
          "AMBER", None),
-        ("heads up: Windows scaling is", "Set scaling to 100%",
-         "Windows is at {n}%. Set it to 100% in Settings \u203a System "
-         "\u203a Display \u203a Scale - this clears by itself.", "AMBER",
-         None),
-        ("heads up: this screen is", "Made for 16:9 screens",
-         "This screen is different, so clicks may land in the wrong place.",
+        ("heads up: Windows scaling is", "Lower Windows scaling",
+         "Windows is at {n}%, too much for this screen. Lower it in "
+         "Settings \u203a System \u203a Display \u203a Scale - this clears "
+         "by itself.", "AMBER", None),
+        ("heads up: this screen is", "Made for widescreens",
+         "This screen is a different shape, so clicks may land in the "
+         "wrong place.", "AMBER", None),
+        ("heads up: the weapon setup was made", "Redo the weapon setup",
+         "Your screen or its scaling changed since you set it up.",
          "AMBER", None),
         ("calibrate first", "Set up your weapons first",
          "It only takes three hovers.", "AMBER", None),
@@ -6580,11 +6720,13 @@ class GlassMacro(ctk.CTk):
         ("couldn't make Roblox fullscreen", "nofs", "!", "AMBER",
          "Roblox isn't fullscreen", "press F11 in Roblox"),
         ("screen check:", "screenok", "\u2713", "GREEN",
-         "Screen settings look right", "16:9 at 100%"),
+         "Screen settings look right", "screen and scaling are fine"),
         ("heads up: Windows scaling is", "scaling", "!", "AMBER",
-         "Scaling isn't 100%", "set it to 100% in Windows display settings"),
+         "Too much Windows scaling", "lower it in Windows display settings"),
         ("heads up: this screen is", "screen", "!", "AMBER",
-         "Screen isn't 16:9", "clicks may miss"),
+         "Screen isn't a widescreen", "clicks may miss"),
+        ("heads up: the weapon setup was made", "needsetup", "!", "AMBER",
+         "Setup needs redoing", "the screen or its scaling changed"),
         ("NOTE: those two points are almost", "needsetup", "!", "AMBER",
          "Setup needs redoing", "the same spot was hovered twice"),
         ("updated: GlassMacro", "updated", "\u2713", "GREEN",
@@ -7333,6 +7475,9 @@ class GlassMacro(ctk.CTk):
                         shot[gy0:min(h, gy0 + GRAB), gx0:min(w, gx0 + GRAB)])
             cal = {
                 "screen": [w, h],
+                # the tiles change size with Windows scaling, so this setup
+                # only fits the layout it was made on
+                "layout": layout_tag(),
                 "anchor_offset": [rx - x0, ry - y0],
                 # constant in pixels however far the grid slides
                 "gl_offset": [gx - rx, gy - ry],
@@ -7620,6 +7765,13 @@ class GlassMacro(ctk.CTk):
         if it never turns up.
         """
         path = (self.cal or {}).get("ffa_path") or default_ffa_path()
+        # A way back taught on a screen of another SHAPE has its spots in the
+        # wrong place across (the menus are centred). The shipped path is
+        # stored as fractions of the screen, so it fits any shape.
+        was = (self.cal or {}).get("layout")
+        if (isinstance(was, list) and len(was) == 2 and was[0]
+                and abs(was[0] - virt_size()[0]) > virt_size()[0] * 0.02):
+            path = default_ffa_path()
         play, ffa, go = path
 
         def picker_up():
@@ -7643,7 +7795,11 @@ class GlassMacro(ctk.CTk):
                 log("  match started - stopping the join")
                 return True
             log("  clicking Play")
-            if not click(play[0], play[1], settle=1.6):
+            # the main hub's Play is found by colour (a reward banner can sit
+            # on the remembered spot); anywhere else, the remembered spot
+            seen = find_play_button()
+            px, py = (int(round(seen[0])), int(round(seen[1]))) if seen else play
+            if not click(px, py, settle=1.6):
                 return False
             if picker_up():
                 log("  match started - stopping the join")
@@ -7823,7 +7979,7 @@ class GlassMacro(ctk.CTk):
         if self.running and focused():
             self._make_fullscreen(wlog)
         if self.running and focused():
-            if in_lobby():
+            if at_hub():
                 self._ui(lambda: self.log("in the hub - joining FFA"))
                 self.rejoin_ffa(
                     lambda m: self._ui(lambda mm=m: self.log(mm)))
@@ -7892,7 +8048,7 @@ class GlassMacro(ctk.CTk):
             # answer, not a guess, so there is nothing to wait for. The quiet
             # window exists for the screens in between rounds, which this is
             # not.
-            if in_lobby():
+            if at_hub():
                 last_known = time.time()
                 self._ui(lambda: self.log("in the hub - joining FFA"))
                 self.rejoin_ffa(
