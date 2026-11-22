@@ -1430,6 +1430,24 @@ def stage_update(zip_path, stage_dir):
     return None
 
 
+def stage_update_patiently(zip_path, stage_dir, tries=6, wait=3.0,
+                           on_wait=None, sleep=time.sleep):
+    """stage_update, with patience for antivirus. A fresh download can be
+    locked for a few seconds while Windows Defender checks it: on 2026-11-06
+    an update failed with "[Errno 22] Invalid argument" on the zip 3 s after
+    it arrived, and the very same update worked minutes later. So a locked
+    zip gets more tries; a zip that is GONE (quarantined) is not waited for."""
+    for attempt in range(1, tries + 1):
+        try:
+            return stage_update(zip_path, stage_dir)
+        except OSError:
+            if attempt == tries or not os.path.exists(zip_path):
+                raise
+            if on_wait:
+                on_wait(attempt)
+            sleep(wait)
+
+
 def _wait_for_exit(pid, seconds=30):
     k32 = ctypes.windll.kernel32
     handle = k32.OpenProcess(0x00100000, False, int(pid))   # SYNCHRONIZE
@@ -6284,7 +6302,11 @@ class GlassMacro(ctk.CTk):
                 raise RuntimeError("the download didn't arrive in one piece")
             self._ui(lambda: self.set_state(f"Updating to {info['version']}",
                                             "Unpacking...", ACCENT))
-            new_exe = stage_update(zip_path, os.path.join(UPDATE_DIR, "new"))
+            new_exe = stage_update_patiently(
+                zip_path, os.path.join(UPDATE_DIR, "new"),
+                on_wait=lambda n: self._ui(lambda: self.set_state(
+                    f"Updating to {info['version']}",
+                    "Waiting for Windows to check the download...", ACCENT)))
             try:
                 os.remove(zip_path)
             except OSError:

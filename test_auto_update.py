@@ -107,6 +107,40 @@ make_zip(half, {"GlassMacro/GlassMacro.exe": b"x"})
 check(G.stage_update(half, os.path.join(WORK, "stage3")) is None,
       "a zip without the app's _internal folder is refused")
 
+# ---- antivirus holding the fresh zip for a moment ------------------------
+real_stage, naps, waits = G.stage_update, [], []
+locked = [2]                                    # locked for the first 2 tries
+
+
+def flaky_stage(zip_path, stage_dir):
+    if locked[0]:
+        locked[0] -= 1
+        raise OSError(22, "Invalid argument", zip_path)
+    return real_stage(zip_path, stage_dir)
+
+
+G.stage_update = flaky_stage
+try:
+    exe = G.stage_update_patiently(src_zip, os.path.join(WORK, "stage4"),
+                                   on_wait=waits.append, sleep=naps.append)
+    check(exe and exe.endswith("GlassMacro.exe") and waits == [1, 2] and len(naps) == 2,
+          "a zip locked by antivirus for a moment is waited for, then unpacked")
+    locked[0] = 99
+    try:
+        G.stage_update_patiently(src_zip, os.path.join(WORK, "stage5"), tries=3,
+                                 sleep=naps.append)
+        check(False, "a zip that stays locked gives up in the end")
+    except OSError:
+        check(True, "a zip that stays locked gives up in the end")
+    gone, naps[:] = os.path.join(WORK, "quarantined.zip"), []
+    try:
+        G.stage_update_patiently(gone, os.path.join(WORK, "stage6"), sleep=naps.append)
+        check(False, "a zip that antivirus removed is not waited for")
+    except OSError:
+        check(naps == [], "a zip that antivirus removed is not waited for")
+finally:
+    G.stage_update = real_stage
+
 # ---- swapping the files --------------------------------------------------
 app_dir = os.path.join(WORK, "app")
 os.makedirs(os.path.join(app_dir, "_internal"))
