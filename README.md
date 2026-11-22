@@ -25,7 +25,7 @@ It got me the wrap, and I left it running for 10+ hours straight with no issues 
   - Disconnected? It hits Reconnect, and if that doesn't work it restarts Roblox and rejoins.
 - **Keeps Roblox fullscreen.** If Roblox ends up in a window, it presses F11 for you.
 - **Recovers by itself.** If Roblox closes, crashes or gets stuck mid-run, it reopens Rivals
-  and gets back into a match. It also keeps your PC from going to sleep while it runs.
+  and gets back into a match. It also keeps your PC from going to sleep, and your screen on, while it runs.
 - **Pauses when you tab out.** It only does anything while Rivals is the window in front, so
   you can still use your PC and it won't mess with anything.
 

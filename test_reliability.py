@@ -39,6 +39,8 @@ check(G.claim_single_instance() is False, "a second copy is turned away")
 # ---- keep the PC awake -----------------------------------------------------
 check(G.keep_awake(True) and G.keep_awake(False),
       "Windows accepts the keep-awake request, and its release")
+check(G.AWAKE_FLAGS & 0x00000002 and G.AWAKE_FLAGS & 0x00000001,
+      "a run keeps the screen on too, not only the PC")
 
 # ---- the log can't grow forever --------------------------------------------
 log = os.path.join(G.DATA_DIR, "log.txt")

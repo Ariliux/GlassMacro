@@ -833,12 +833,19 @@ def frame_thumb():
         return None
 
 
+# CONTINUOUS | SYSTEM | DISPLAY: the PC stays awake AND the screen stays on.
+# The screen matters too: everything GlassMacro does starts from a picture of
+# it, and a screen that Windows has turned off can stop giving fresh pictures
+# (MayhemMacro went blind overnight that way until it asked for DISPLAY too).
+AWAKE_FLAGS = 0x80000000 | 0x00000001 | 0x00000002
+
+
 def keep_awake(on):
-    """While a run is going, stop Windows going to sleep - a sleeping PC ends
-    an AFK session for good. Only the PC; the screen may still turn off.
+    """While a run is going, keep the PC awake and the screen on - a sleeping
+    PC ends an AFK session for good, and a dark screen leaves the macro blind.
     Per thread, so call it from the Tk thread."""
     try:
-        flags = 0x80000000 | (0x00000001 if on else 0)  # CONTINUOUS | SYSTEM
+        flags = AWAKE_FLAGS if on else 0x80000000  # off: back to normal
         return bool(ctypes.windll.kernel32.SetThreadExecutionState(flags))
     except Exception:
         return False
