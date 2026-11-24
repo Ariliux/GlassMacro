@@ -91,9 +91,10 @@ weapons and the grid moves, hit **Redo setup** and do the same three hovers.
   rejoins and a chart of the last 14 days.
 - **Activity** lists what happened in plain English, newest first, and can be filtered to
   just loadouts or problems. **Log** has every detail, which helps with bug reports.
-- **It updates itself.** When a new version is out, it asks *"v1.1.1 is available. Do you
-  want to update?"* Click **Yes** and it downloads the update, closes, updates and opens
-  again. Your weapon setup, settings and stats stay. It never asks in the middle of a run.
+- **It updates itself.** When a new version is out, it asks if you want to update. Click
+  **Yes** and it downloads the update, closes, updates and opens again. Your weapon setup,
+  settings and stats stay. It never asks in the middle of a run, and if Windows is still
+  scanning the download, it waits a few seconds instead of giving up.
 
 The other pages:
 - **Weapons**: the setup, **Redo setup**, and a **Live test** of the detection. Leave
@@ -102,7 +103,7 @@ The other pages:
   your own way if the menu ever changes.
 - **Discord**: optional alerts, see below.
 - **Settings**: turn off **Keep Roblox fullscreen**, **Reconnect automatically** or
-  **Save screenshots** (they're remembered now), and open the data folder, which has the
+  **Save screenshots**, change your **Hotkeys**, and open the data folder, which has the
   log and the pictures it saves.
 - **About**: the version, **Check for updates**, and every keyboard shortcut.
 
@@ -148,8 +149,11 @@ it's **…** → **Keep** → **Show more** → **Keep anyway**.
 
 **"Smart App Control blocked this app"**: this one has no Run anyway button. The only
 way around it is turning Smart App Control off, which makes your PC less protected. That's
-totally your call, and it's fine to skip GlassMacro instead. If you are able to keep the file without turning off the entire app itself, you could keep it. If not that's fine!
-(no this app isn't malware, ransomware or whatever they call it. GlassMacro already has over 150+ downloads, and no issues!)
+totally your call, and it's fine to skip GlassMacro instead. (Smart App Control can't make
+an exception for just one app, so it's all or nothing.)
+
+And no, GlassMacro isn't malware, ransomware or anything like that. The whole code is right
+here in this repo for anyone to read, and it already has 150+ downloads with no issues!
 
 **Your antivirus quarantines it**: don't restore it. Open an [issue](../../issues) with
 the exact detection name and I'll get it reported as a false positive.
