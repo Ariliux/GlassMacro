@@ -148,7 +148,8 @@ it's **…** → **Keep** → **Show more** → **Keep anyway**.
 
 **"Smart App Control blocked this app"**: this one has no Run anyway button. The only
 way around it is turning Smart App Control off, which makes your PC less protected. That's
-totally your call, and it's fine to skip GlassMacro instead.
+totally your call, and it's fine to skip GlassMacro instead. If you are able to keep the file without turning off the entire app itself, you could keep it. If not that's fine!
+(no this app isn't malware, ransomware or whatever they call it. GlassMacro already has over 150+ downloads, and no issues!)
 
 **Your antivirus quarantines it**: don't restore it. Open an [issue](../../issues) with
 the exact detection name and I'll get it reported as a false positive.
