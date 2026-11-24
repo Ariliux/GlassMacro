@@ -41,7 +41,7 @@ It got me the wrap, and I left it running for 10+ hours straight with no issues 
   to set it to, in Settings → System → Display → **Scale**.
 - If you change your scaling or your screen later, redo the weapon setup once. The app
   reminds you.
-- Roblox Rivals, obviously
+- Roblox Rivals, obviously..
 
 ## Installing it
 
