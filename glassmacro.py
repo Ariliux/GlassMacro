@@ -1489,6 +1489,10 @@ def swap_in_update(src_dir, dst_dir, manifest=None, tries=60):
         shutil.copytree(os.path.join(src_dir, "_internal"), new_int)
         shutil.copy2(os.path.join(src_dir, "GlassMacro.exe"), new_exe)
         for rel, size in (manifest or {}).items():
+            # only the app is installed; extras that ride along in the
+            # download (README.txt, LICENSE.txt) aren't part of the check
+            if rel != "GlassMacro.exe" and not rel.startswith("_internal" + os.sep):
+                continue
             here = (new_exe if rel == "GlassMacro.exe" else
                     os.path.join(dst_dir, rel.replace("_internal",
                                                       "_internal.new", 1)))

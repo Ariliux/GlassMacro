@@ -186,6 +186,11 @@ check(refused and os.listdir(os.path.join(app_dir, "_internal")) == ["new.txt"]
       and not os.path.exists(os.path.join(app_dir, "_internal.new"))
       and not os.path.exists(os.path.join(app_dir, "GlassMacro.exe.new")),
       "an incomplete copy is refused, and the install is exactly as it was")
+extras = dict(manifest)
+extras["README.txt"], extras["LICENSE.txt"] = 900, 1100   # ride along in the zip
+check(G.swap_in_update(os.path.dirname(exe), app_dir, extras)
+      and open(os.path.join(app_dir, "GlassMacro.exe"), "rb").read() == b"NEW-EXE",
+      "a download with a README/LICENSE next to the app still installs")
 held = open(os.path.join(app_dir, "_internal", "new.txt"))   # "in use"
 result = G.swap_in_update(os.path.dirname(exe), app_dir, manifest, tries=2)
 held.close()
