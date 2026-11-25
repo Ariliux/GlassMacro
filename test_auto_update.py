@@ -186,11 +186,18 @@ check(refused and os.listdir(os.path.join(app_dir, "_internal")) == ["new.txt"]
       and not os.path.exists(os.path.join(app_dir, "_internal.new"))
       and not os.path.exists(os.path.join(app_dir, "GlassMacro.exe.new")),
       "an incomplete copy is refused, and the install is exactly as it was")
-extras = dict(manifest)
-extras["README.txt"], extras["LICENSE.txt"] = 900, 1100   # ride along in the zip
-check(G.swap_in_update(os.path.dirname(exe), app_dir, extras)
-      and open(os.path.join(app_dir, "GlassMacro.exe"), "rb").read() == b"NEW-EXE",
-      "a download with a README/LICENSE next to the app still installs")
+# the release zip: exe, _internal, README.txt and LICENSE.txt at the top
+flat = os.path.join(WORK, "flat.zip")
+make_zip(flat, {"GlassMacro.exe": b"NEW-EXE", "_internal/new.txt": b"new",
+                "README.txt": b"how to use it", "LICENSE.txt": b"MIT"})
+flat_stage = os.path.join(WORK, "stage_flat")
+flat_exe = G.stage_update(flat, flat_stage)
+flat_list = json.load(open(os.path.join(flat_stage, "manifest.json")))
+check(flat_exe and "README.txt" in flat_list
+      and G.swap_in_update(os.path.dirname(flat_exe), app_dir, flat_list)
+      and open(os.path.join(app_dir, "GlassMacro.exe"), "rb").read() == b"NEW-EXE"
+      and sorted(os.listdir(app_dir)) == ["GlassMacro.exe", "_internal", "backup"],
+      "a download with a README/LICENSE next to the app still installs (just the app)")
 held = open(os.path.join(app_dir, "_internal", "new.txt"))   # "in use"
 result = G.swap_in_update(os.path.dirname(exe), app_dir, manifest, tries=2)
 held.close()
