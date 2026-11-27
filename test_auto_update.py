@@ -198,6 +198,33 @@ check(flat_exe and "README.txt" in flat_list
       and open(os.path.join(app_dir, "GlassMacro.exe"), "rb").read() == b"NEW-EXE"
       and sorted(os.listdir(app_dir)) == ["GlassMacro.exe", "_internal", "backup"],
       "a download with a README/LICENSE next to the app still installs (just the app)")
+
+# ---- one exe from 1.2.0: the update zip marks it (onefile.txt in _internal)
+one_zip = os.path.join(WORK, "one.zip")
+make_zip(one_zip, {"GlassMacro.exe": b"ONE-EXE", "_internal/onefile.txt": b"one file",
+                   "README.txt": b"how to use it", "LICENSE.txt": b"MIT"})
+one_stage = os.path.join(WORK, "stage_one")
+one_exe = G.stage_update(one_zip, one_stage)              # what OLD versions do: must pass
+one_list = json.load(open(os.path.join(one_stage, "manifest.json")))
+check(one_exe and G.is_onefile_build(os.path.dirname(one_exe)),
+      "a one-file update zip still unpacks the old way, and is seen as one file")
+folder_app = os.path.join(WORK, "folder_app")
+os.makedirs(os.path.join(folder_app, "_internal"))
+open(os.path.join(folder_app, "GlassMacro.exe"), "wb").write(b"OLD-EXE")
+open(os.path.join(folder_app, "_internal", "old.dll"), "wb").write(b"old")
+open(os.path.join(folder_app, "my notes.txt"), "w").write("keep")
+check(G.swap_in_update(os.path.dirname(one_exe), folder_app, one_list)
+      and sorted(os.listdir(folder_app)) == ["GlassMacro.exe", "my notes.txt"]
+      and open(os.path.join(folder_app, "GlassMacro.exe"), "rb").read() == b"ONE-EXE",
+      "a folder install becomes one exe: _internal retired, your files kept")
+loose = os.path.join(WORK, "Downloads")
+os.makedirs(loose)
+open(os.path.join(loose, "GlassMacro.exe"), "wb").write(b"OLD-ONE")
+open(os.path.join(loose, "other.zip"), "wb").write(b"not ours")
+check(G.swap_in_update(os.path.dirname(one_exe), loose, one_list)
+      and sorted(os.listdir(loose)) == ["GlassMacro.exe", "other.zip"]
+      and open(os.path.join(loose, "GlassMacro.exe"), "rb").read() == b"ONE-EXE",
+      "one exe updates to the next one exe, nothing else in the folder touched")
 held = open(os.path.join(app_dir, "_internal", "new.txt"))   # "in use"
 result = G.swap_in_update(os.path.dirname(exe), app_dir, manifest, tries=2)
 held.close()

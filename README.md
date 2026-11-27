@@ -45,18 +45,18 @@ It got me the wrap, and I left it running for 10+ hours straight with no issues 
 
 ## Installing it
 
-1. Go to **[Releases](../../releases/latest)** and download the `GlassMacro-v….zip` file.
+1. Go to **[Releases](../../releases/latest)** and download **`GlassMacro.exe`**.
    Only get it from here, not from random re-uploads.
-2. Right-click the zip → **Extract All**. Don't run it from inside the zip.
-3. Open the folder and run **`GlassMacro.exe`**. Next to it are `README.txt` (the short
-   version of this page), `LICENSE.txt` and `_internal` (the app's own files, keep it there).
+2. Put it wherever you like (Downloads, Desktop, a folder of your own) and double-click it.
+   That's the whole app, one file. (The `GlassMacro-v….zip` next to it is the update
+   package the app installs itself from. It has the same app inside.)
 
 Windows will probably warn you the first time. That's normal, and the section
 [If Windows or your antivirus warns you](#if-windows-or-your-antivirus-warns-you)
 below explains what to do.
 
 Your settings are saved in `%LOCALAPPDATA%\GlassMacro`. If you ever want it gone,
-delete the GlassMacro folder and that one, and that's everything.
+delete `GlassMacro.exe` and that folder, and that's everything.
 
 ## Setting it up (like 30 seconds, one time)
 
@@ -198,11 +198,11 @@ If you'd rather build it from the code, you need Python 3.14 on Windows:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements.txt
-.\.venv\Scripts\pyinstaller --noconfirm --clean --onedir --windowed --noupx --name GlassMacro `
+.\.venv\Scripts\pyinstaller --noconfirm --clean --onefile --windowed --noupx --name GlassMacro `
   --icon glassmacro.ico --add-data "glassmacro.ico;." --version-file version_info.txt glassmacro.py
 ```
 
-The app ends up in `dist\GlassMacro\`. `python make_icon.py` redraws the icon.
+The app ends up as `dist\GlassMacro.exe`. `python make_icon.py` redraws the icon.
 `python test_detectors.py` checks the screen detection against real screenshots, which you
 need to provide yourself because they aren't in the repo.
 

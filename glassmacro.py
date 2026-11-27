@@ -35,7 +35,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import keyboard
 
-APP_NAME, APP_VER = "GlassMacro", "1.1.5"
+APP_NAME, APP_VER = "GlassMacro", "1.2.0"
 
 # Calibration lives in AppData, never beside the exe: a PyInstaller onefile
 # build unpacks to a temp folder that is deleted on exit, so anything saved
@@ -1456,8 +1456,23 @@ def _wait_for_exit(pid, seconds=30):
         k32.CloseHandle(handle)
 
 
+# GlassMacro is ONE exe from 1.2.0 on. Its update zip still has an _internal
+# folder (older versions only install a zip with GlassMacro.exe and _internal),
+# holding just this note: the new build is the exe alone, so the swap puts in
+# only the exe and retires the install's old _internal folder.
+ONEFILE_MARK = "onefile.txt"
+
+
+def is_onefile_build(src_dir):
+    """Is the unpacked update in src_dir a one-file GlassMacro (the exe
+    alone; its _internal only holds ONEFILE_MARK for older versions)?"""
+    return os.path.isfile(os.path.join(src_dir, "_internal", ONEFILE_MARK))
+
+
 def swap_in_update(src_dir, dst_dir, manifest=None, tries=60):
     """Put the new GlassMacro.exe and _internal from src_dir into dst_dir.
+    A one-file build (ONEFILE_MARK) is the exe alone: only the exe goes in,
+    and an old _internal in dst_dir is retired with it.
 
     The slow part - copying 160 MB - goes into _internal.new and
     GlassMacro.exe.new NEXT TO the install, which stays complete and
@@ -1474,6 +1489,7 @@ def swap_in_update(src_dir, dst_dir, manifest=None, tries=60):
     new_int, old_int = internal + ".new", internal + ".old"
     exe = os.path.join(dst_dir, "GlassMacro.exe")
     new_exe = exe + ".new"
+    onefile = is_onefile_build(src_dir)
 
     def drop_new():
         shutil.rmtree(new_int, ignore_errors=True)
@@ -1486,12 +1502,13 @@ def swap_in_update(src_dir, dst_dir, manifest=None, tries=60):
         shutil.rmtree(leftover, ignore_errors=True)
     # 1. copy, and check the copy against the list made at unpacking
     try:
-        shutil.copytree(os.path.join(src_dir, "_internal"), new_int)
+        if not onefile:
+            shutil.copytree(os.path.join(src_dir, "_internal"), new_int)
         shutil.copy2(os.path.join(src_dir, "GlassMacro.exe"), new_exe)
         for rel, size in (manifest or {}).items():
             # only the app is installed; extras that ride along in the
             # download (README.txt, LICENSE.txt) aren't part of the check
-            if rel != "GlassMacro.exe" and not rel.startswith("_internal" + os.sep):
+            if rel != "GlassMacro.exe" and (onefile or not rel.startswith("_internal" + os.sep)):
                 continue
             here = (new_exe if rel == "GlassMacro.exe" else
                     os.path.join(dst_dir, rel.replace("_internal",
@@ -1523,8 +1540,9 @@ def swap_in_update(src_dir, dst_dir, manifest=None, tries=60):
         return False
     moved_in = False
     try:
-        os.rename(new_int, internal)
-        moved_in = True
+        if not onefile:
+            os.rename(new_int, internal)
+            moved_in = True
         os.replace(new_exe, exe)
     except Exception:
         if moved_in:
