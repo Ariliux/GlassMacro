@@ -1461,6 +1461,10 @@ def _wait_for_exit(pid, seconds=30):
 # holding just this note: the new build is the exe alone, so the swap puts in
 # only the exe and retires the install's old _internal folder.
 ONEFILE_MARK = "onefile.txt"
+# Every folder build of GlassMacro has its icon in _internal. A one exe kept in
+# Downloads can sit next to ANOTHER app's _internal, so only one with this in
+# it is retired.
+OWN_MARK = "glassmacro.ico"
 
 
 def is_onefile_build(src_dir):
@@ -1472,7 +1476,8 @@ def is_onefile_build(src_dir):
 def swap_in_update(src_dir, dst_dir, manifest=None, tries=60):
     """Put the new GlassMacro.exe and _internal from src_dir into dst_dir.
     A one-file build (ONEFILE_MARK) is the exe alone: only the exe goes in,
-    and an old _internal in dst_dir is retired with it.
+    and an old _internal in dst_dir is retired with it, but only GlassMacro's
+    own (OWN_MARK): another app's is left alone.
 
     The slow part - copying 160 MB - goes into _internal.new and
     GlassMacro.exe.new NEXT TO the install, which stays complete and
@@ -1490,16 +1495,19 @@ def swap_in_update(src_dir, dst_dir, manifest=None, tries=60):
     exe = os.path.join(dst_dir, "GlassMacro.exe")
     new_exe = exe + ".new"
     onefile = is_onefile_build(src_dir)
+    ours = not onefile or os.path.isfile(os.path.join(internal, OWN_MARK))
 
     def drop_new():
-        shutil.rmtree(new_int, ignore_errors=True)
+        if ours:
+            shutil.rmtree(new_int, ignore_errors=True)
         try:
             os.remove(new_exe)
         except OSError:
             pass
 
-    for leftover in (new_int, old_int):
-        shutil.rmtree(leftover, ignore_errors=True)
+    if ours:
+        for leftover in (new_int, old_int):
+            shutil.rmtree(leftover, ignore_errors=True)
     # 1. copy, and check the copy against the list made at unpacking
     try:
         if not onefile:
@@ -1531,7 +1539,7 @@ def swap_in_update(src_dir, dst_dir, manifest=None, tries=60):
         drop_new()
         return False
     # 3. switch with renames; undo them if any fails
-    had_old = os.path.isdir(internal)
+    had_old = ours and os.path.isdir(internal)
     try:
         if had_old:
             os.rename(internal, old_int)     # fails if anything runs from it

@@ -212,6 +212,7 @@ folder_app = os.path.join(WORK, "folder_app")
 os.makedirs(os.path.join(folder_app, "_internal"))
 open(os.path.join(folder_app, "GlassMacro.exe"), "wb").write(b"OLD-EXE")
 open(os.path.join(folder_app, "_internal", "old.dll"), "wb").write(b"old")
+open(os.path.join(folder_app, "_internal", G.OWN_MARK), "wb").close()
 open(os.path.join(folder_app, "my notes.txt"), "w").write("keep")
 check(G.swap_in_update(os.path.dirname(one_exe), folder_app, one_list)
       and sorted(os.listdir(folder_app)) == ["GlassMacro.exe", "my notes.txt"]
@@ -225,6 +226,15 @@ check(G.swap_in_update(os.path.dirname(one_exe), loose, one_list)
       and sorted(os.listdir(loose)) == ["GlassMacro.exe", "other.zip"]
       and open(os.path.join(loose, "GlassMacro.exe"), "rb").read() == b"ONE-EXE",
       "one exe updates to the next one exe, nothing else in the folder touched")
+crowded = os.path.join(WORK, "Downloads2")                # another app's _internal there
+os.makedirs(os.path.join(crowded, "_internal"))
+open(os.path.join(crowded, "GlassMacro.exe"), "wb").write(b"OLD-ONE")
+open(os.path.join(crowded, "_internal", "their.dll"), "wb").write(b"theirs")
+check(G.swap_in_update(os.path.dirname(one_exe), crowded, one_list)
+      and sorted(os.listdir(crowded)) == ["GlassMacro.exe", "_internal"]
+      and os.listdir(os.path.join(crowded, "_internal")) == ["their.dll"]
+      and open(os.path.join(crowded, "GlassMacro.exe"), "rb").read() == b"ONE-EXE",
+      "one exe next to ANOTHER app's _internal: that folder is left alone")
 held = open(os.path.join(app_dir, "_internal", "new.txt"))   # "in use"
 result = G.swap_in_update(os.path.dirname(exe), app_dir, manifest, tries=2)
 held.close()

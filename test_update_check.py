@@ -94,8 +94,9 @@ app.update()
 shown = []
 app._ui = lambda fn: shown.append(fn)
 
+_major, _minor, _patch = (int(p) for p in G.APP_VER.split("."))
 for tag, expect in (("v" + G.APP_VER, False), ("v1.0.2", False),
-                    ("v1.0.99", False), ("v1.1.99", True)):
+                    ("v1.0.99", False), (f"v{_major}.{_minor}.{_patch + 1}", True)):
     shown.clear()
     fake({"tag_name": tag, "html_url": page})
     got = app._check_updates_once()
