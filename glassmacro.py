@@ -35,7 +35,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import keyboard
 
-APP_NAME, APP_VER = "GlassMacro", "1.2.0"
+APP_NAME, APP_VER = "GlassMacro", "1.2.1"
 
 # Calibration lives in AppData, never beside the exe: a PyInstaller onefile
 # build unpacks to a temp folder that is deleted on exit, so anything saved
@@ -88,6 +88,7 @@ STALL_DIR = os.path.join(DATA_DIR, "stalls")
 # says nothing about WHAT - so take a picture instead of a number.
 STALL_AFTER = 300.0        # 5 minutes with nothing recognised
 STALL_EVERY = 900.0        # then one more every 15
+RUN_CLICK_GAP = 0.6        # a 2nd click on Start/Stop this soon is a double-click, not a new order
 
 # A long stretch with nothing recognised is usually an EMPTY server - alive,
 # nobody to kill you, so the picker never comes back. That is the best case, not
@@ -2541,6 +2542,7 @@ class GlassMacro(ctk.CTk):
         self.running = False
         self.watching = False
         self.calibrating = False
+        self._run_clicked_at = float("-inf")
         self._q = queue.Queue()
 
         self._build()
@@ -3279,6 +3281,12 @@ class GlassMacro(ctk.CTk):
         """The header button. The Start and Stop keys skip this."""
         if self.calibrating and not self.running:
             return              # the Start key is ignored during setup too
+        now = time.monotonic()
+        if now - self._run_clicked_at < RUN_CLICK_GAP:
+            # A double-click (or an auto-clicker) used to start and stop the
+            # run at once - 40 times in 4 seconds in one real log.
+            return
+        self._run_clicked_at = now
         self.toggle_run()
         if not self._ready():
             self._show_page("weapons")

@@ -96,6 +96,17 @@ drain()
 check(len(toggles) == 2, "F1 is ignored during setup")
 app.calibrating = False
 
+# ---- the Start/Stop button: a double-click is one click ----------------------
+before = list(toggles)
+toggles.clear()
+app._run_clicked()
+app._run_clicked()                        # a double-click, or an auto-clicker
+check(toggles == [False], "a double-click on Start starts once, not start + stop")
+app._run_clicked_at -= G.RUN_CLICK_GAP + 0.1    # a moment later
+app._run_clicked()
+check(len(toggles) == 2, "a click after that still works (Stop)")
+toggles[:] = before
+
 # ---- changing a key in Settings ----------------------------------------------
 app._pick_key("start")
 check(app._key_btns["start"].cget("text") == "Press a key…",
