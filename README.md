@@ -10,6 +10,10 @@
   <a href="https://discord.gg/MZ5PTDCk9G"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Finvites%2FMZ5PTDCk9G%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&suffix=%20members&label=Discord&logo=discord&logoColor=white&color=5865F2" alt="Discord"></a>
 </p>
 
+<p align="center">
+  <img src="docs/screenshot.png" width="760" alt="GlassMacro's home screen during a run: playtime, loadouts, rejoins and recent activity">
+</p>
+
 ## Why I made this
 
 I wanted the **Glass wrap** in Rivals, and grinding FFA playtime by hand takes forever. I
